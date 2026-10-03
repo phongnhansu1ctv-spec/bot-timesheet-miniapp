@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>Bot Timesheet</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+body{font-family:-apple-system,sans-serif;margin:0;padding:16px;background:var(--tg-theme-bg-color,#fff);color:var(--tg-theme-text-color,#000);}
+h3{margin:0 0 4px;}
+.sub{color:var(--tg-theme-hint-color,#888);font-size:13px;margin:0 0 16px;}
+.row{display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid var(--tg-theme-hint-color,#eee);}
+.row span{flex:1;padding-right:8px;}
+.row input{width:64px;height:32px;text-align:right;font-size:15px;border:1px solid var(--tg-theme-hint-color,#ccc);border-radius:6px;}
+#total{display:flex;justify-content:space-between;padding:14px 0;font-weight:600;}
+button{width:100%;height:44px;border:none;border-radius:8px;background:var(--tg-theme-button-color,#2481cc);color:var(--tg-theme-button-text-color,#fff);font-size:15px;margin-top:8px;}
+button:disabled{opacity:0.4;}
+button.secondary{background:transparent;color:var(--tg-theme-button-color,#2481cc);border:1px solid var(--tg-theme-button-color,#2481cc);}
+.msg{text-align:center;padding:40px 0;color:var(--tg-theme-hint-color,#888);}
+.error{color:#e53935;}
+.ok{color:#2e7d32;}
+</style>
+</head>
+<body>
+<div id="app"><p class="msg">Đang tải...</p></div>
+<script>
+// ĐÃ GẮN SẴN URL Apps Script hiện tại - nếu sau này đổi deployment/WEB_APP_URL, phải sửa đúng dòng này
+// rồi tải lại file này lên GitHub Pages (không tự đồng bộ với Script Properties bên Apps Script).
+var API_URL = "https://script.google.com/macros/s/AKfycbzbUMVtBrj3qXS-R6kmHLNY0S9OnnR_CagHrGjOgd5NJfxJ8X0Jj8dVRWUvrwiehkje/exec";
+
+var tg = window.Telegram.WebApp;
+tg.ready(); tg.expand();
+var state = { hoTen: "", available: 8, projects: [], entries: {} };
+
+function callApi(action, extra) {
+  var payload = Object.assign({ action: action, initData: tg.initData }, extra || {});
+  return fetch(API_URL, { method: "POST", body: JSON.stringify(payload) }).then(function (r) { return r.json(); });
+}
+
+function init() {
+  callApi("init").then(function (data) {
+    if (!data.ok) { showMessage(data.error, "error"); return; }
+    state.hoTen = data.hoTen; state.available = data.available; state.projects = data.projects;
+    render();
+  }).catch(function (err) { showMessage("Lỗi kết nối: " + err, "error"); });
+}
+
+function showMessage(text, cls) {
+  document.getElementById("app").innerHTML = "<p class=\"msg " + (cls || "") + "\">" + text + "</p>";
+}
+
+// ---- Màn hình 1: nhập giờ ----
+
+function render() {
+  var root = document.getElementById("app");
+  if (state.projects.length === 0) {
+    showMessage("Chưa có dự án nào Active."); return;
+  }
+  var html = "<h3>Hôm nay</h3><p class=\"sub\">" + state.hoTen + " · Giờ khả dụng: " + state.available + "h</p>";
+  state.projects.forEach(function (p) {
+    var v = state.entries[p.ProjectID] || "";
+    html += "<div class=\"row\"><span>" + p.TenDuAn + "</span>" +
+      "<input type=\"number\" min=\"0\" step=\"0.5\" data-id=\"" + p.ProjectID + "\" placeholder=\"0\" value=\"" + v + "\"></div>";
+  });
+  html += "<div id=\"total\"></div><button id=\"reviewBtn\" disabled>Xem lại &amp; lưu</button>";
+  root.innerHTML = html;
+  Array.prototype.forEach.call(root.querySelectorAll("input"), function (inp) {
+    inp.addEventListener("input", onInput);
+  });
+  document.getElementById("reviewBtn").addEventListener("click", showConfirm);
+  updateTotal();
+}
+
+function onInput(e) {
+  var id = e.target.dataset.id;
+  var val = parseFloat(e.target.value);
+  if (val > 0) { state.entries[id] = val; } else { delete state.entries[id]; }
+  updateTotal();
+}
+
+function sumEntries() {
+  return Object.keys(state.entries).reduce(function (s, k) { return s + state.entries[k]; }, 0);
+}
+
+function updateTotal() {
+  var total = sumEntries();
+  var el = document.getElementById("total");
+  var ok = total === state.available;
+  el.innerHTML = "<span>Tổng</span><span class=\"" + (ok ? "ok" : "error") + "\">" + total + "h / " + state.available + "h</span>";
+  document.getElementById("reviewBtn").disabled = !ok;
+}
+
+// ---- Màn hình 2: xem lại & xác nhận ----
+
+function showConfirm() {
+  var root = document.getElementById("app");
+  var html = "<h3>Xem lại trước khi lưu</h3><p class=\"sub\">" + state.hoTen + " · Hôm nay</p>";
+  state.projects.forEach(function (p) {
+    var v = state.entries[p.ProjectID];
+    if (v > 0) {
+      html += "<div class=\"row\"><span>" + p.TenDuAn + "</span><span>" + v + "h</span></div>";
+    }
+  });
+  var total = sumEntries();
+  html += "<div id=\"total\"><span>Tổng</span><span class=\"ok\">" + total + "h / " + state.available + "h</span></div>";
+  html += "<button id=\"confirmBtn\">✅ Xác nhận, lưu</button>";
+  html += "<button id=\"backBtn\" class=\"secondary\">✏️ Sửa lại</button>";
+  root.innerHTML = html;
+  document.getElementById("confirmBtn").addEventListener("click", onConfirm);
+  document.getElementById("backBtn").addEventListener("click", render);
+}
+
+function onConfirm() {
+  document.getElementById("confirmBtn").disabled = true;
+  document.getElementById("backBtn").disabled = true;
+  var entries = Object.keys(state.entries).map(function (id) { return { projectId: id, soGio: state.entries[id] }; });
+  callApi("submit", { entries: entries }).then(function (res) {
+    if (res.ok) {
+      showMessage("Đã lưu thành công!", "ok");
+      setTimeout(function () { tg.close(); }, 1200);
+    } else {
+      showErrorWithBack(res.error);
+    }
+  }).catch(function (err) { showErrorWithBack("Lỗi kết nối: " + err); });
+}
+
+function showErrorWithBack(text) {
+  var root = document.getElementById("app");
+  root.innerHTML = "<p class=\"msg error\">" + text + "</p><button id=\"backBtn2\">Quay lại sửa</button>";
+  document.getElementById("backBtn2").addEventListener("click", render);
+}
+
+init();
+</script>
+</body>
+</html>
