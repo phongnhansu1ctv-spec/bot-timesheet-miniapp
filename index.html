@@ -9,13 +9,28 @@
 body{font-family:-apple-system,sans-serif;margin:0;padding:16px;background:var(--tg-theme-bg-color,#fff);color:var(--tg-theme-text-color,#000);}
 h3{margin:0 0 4px;}
 .sub{color:var(--tg-theme-hint-color,#888);font-size:13px;margin:0 0 16px;}
-.row{display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid var(--tg-theme-hint-color,#eee);}
-.row span{flex:1;padding-right:8px;}
-.row input{width:64px;height:32px;text-align:right;font-size:15px;border:1px solid var(--tg-theme-hint-color,#ccc);border-radius:6px;}
-#total{display:flex;justify-content:space-between;padding:14px 0;font-weight:600;}
+.row{display:flex;align-items:flex-start;padding:12px 0;border-bottom:1px solid var(--tg-theme-hint-color,#eee);}
+.info{flex:1;padding-right:8px;min-width:0;}
+.name{font-weight:600;font-size:15px;}
+.desc{color:var(--tg-theme-hint-color,#888);font-size:12px;margin-top:2px;}
+.row input.hours{width:64px;height:36px;text-align:right;font-size:16px;border:1px solid var(--tg-theme-hint-color,#ccc);border-radius:6px;background:var(--tg-theme-bg-color,#fff);color:var(--tg-theme-text-color,#000);}
+.pick{padding:12px 0;border-bottom:1px solid var(--tg-theme-hint-color,#eee);position:relative;}
+.pickhead{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;}
+.pickhead label{font-size:13px;color:var(--tg-theme-hint-color,#888);}
+.pick input.search{width:100%;box-sizing:border-box;height:40px;font-size:16px;padding:0 12px;border:1px solid var(--tg-theme-hint-color,#ccc);border-radius:8px;background:var(--tg-theme-bg-color,#fff);color:var(--tg-theme-text-color,#000);}
+.results{margin-top:4px;border:1px solid var(--tg-theme-hint-color,#ddd);border-radius:8px;max-height:260px;overflow-y:auto;background:var(--tg-theme-secondary-bg-color,#f7f7f7);}
+.res-item{padding:10px 12px;border-bottom:1px solid var(--tg-theme-hint-color,#eee);cursor:pointer;}
+.res-item:last-child{border-bottom:none;}
+.res-name{font-size:15px;}
+.res-desc{color:var(--tg-theme-hint-color,#888);font-size:12px;margin-top:2px;}
+.res-note{padding:10px 12px;font-size:12px;color:var(--tg-theme-hint-color,#888);}
+.count{color:var(--tg-theme-hint-color,#888);font-size:13px;margin:12px 0 0;}
+#total{display:flex;justify-content:space-between;padding:14px 0 4px;font-weight:600;}
+.hint{font-size:12px;color:#e53935;margin:0 0 4px;min-height:14px;}
 button{width:100%;height:44px;border:none;border-radius:8px;background:var(--tg-theme-button-color,#2481cc);color:var(--tg-theme-button-text-color,#fff);font-size:15px;margin-top:8px;}
 button:disabled{opacity:0.4;}
 button.secondary{background:transparent;color:var(--tg-theme-button-color,#2481cc);border:1px solid var(--tg-theme-button-color,#2481cc);}
+button.x{width:32px;height:32px;margin:0 0 0 8px;padding:0;background:transparent;color:var(--tg-theme-hint-color,#888);font-size:20px;line-height:1;flex:none;}
 .msg{text-align:center;padding:40px 0;color:var(--tg-theme-hint-color,#888);}
 .error{color:#e53935;}
 .ok{color:#2e7d32;}
@@ -28,93 +43,223 @@ button.secondary{background:transparent;color:var(--tg-theme-button-color,#2481c
 // rồi tải lại file này lên GitHub Pages (không tự đồng bộ với Script Properties bên Apps Script).
 var API_URL = "https://script.google.com/macros/s/AKfycbzbUMVtBrj3qXS-R6kmHLNY0S9OnnR_CagHrGjOgd5NJfxJ8X0Jj8dVRWUvrwiehkje/exec";
 
-var tg = window.Telegram.WebApp;
-tg.ready(); tg.expand();
-var state = { hoTen: "", available: 8, projects: [], entries: {} };
+var MAX_RESULTS = 10; // số dự án tối đa hiện trong danh sách gợi ý mỗi lần tìm
+
+var tg = window.Telegram ? window.Telegram.WebApp : null;
+var state = { hoTen: "", available: 8, projects: [], byId: {}, rows: [newRow()] };
+
+function newRow() { return { projectId: "", gio: "" }; }
+function $(id) { return document.getElementById(id); }
+
+function esc(s) {
+  return String(s == null ? "" : s)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+// Bỏ dấu tiếng Việt + về chữ thường để tìm "ban ruoi" ra "Bắn ruồi"
+function norm(s) {
+  return String(s || "").toLowerCase().replace(/đ/g, "d").normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+}
+
+function fmt(n) { return String(Math.round(n * 100) / 100); }
 
 function callApi(action, extra) {
-  var payload = Object.assign({ action: action, initData: tg.initData }, extra || {});
+  var payload = Object.assign({ action: action, initData: tg ? tg.initData : "" }, extra || {});
   return fetch(API_URL, { method: "POST", body: JSON.stringify(payload) }).then(function (r) { return r.json(); });
 }
 
 function init() {
   callApi("init").then(function (data) {
     if (!data.ok) { showMessage(data.error, "error"); return; }
-    state.hoTen = data.hoTen; state.available = data.available; state.projects = data.projects;
+    state.hoTen = data.hoTen;
+    state.available = data.available;
+    state.projects = data.projects;
+    state.byId = {};
+    data.projects.forEach(function (p) { state.byId[p.ProjectID] = p; });
     render();
   }).catch(function (err) { showMessage("Lỗi kết nối: " + err, "error"); });
 }
 
 function showMessage(text, cls) {
-  document.getElementById("app").innerHTML = "<p class=\"msg " + (cls || "") + "\">" + text + "</p>";
+  var root = $("app");
+  root.innerHTML = "";
+  var p = document.createElement("p");
+  p.className = "msg " + (cls || "");
+  p.textContent = text; // textContent: không bao giờ diễn giải HTML trong thông báo lỗi
+  root.appendChild(p);
 }
 
-// ---- Màn hình 1: nhập giờ ----
+// ---- Màn hình 1: chọn dự án + nhập giờ ----
+
+function chosenIds() {
+  return state.rows.map(function (r) { return r.projectId; }).filter(Boolean);
+}
+
+function pickRowHtml(i) {
+  var rm = state.rows.length > 1 ? '<button class="x" data-rm="' + i + '" title="Xoá dòng">×</button>' : "";
+  return '<div class="pick">' +
+    '<div class="pickhead"><label>Chọn dự án</label>' + rm + '</div>' +
+    '<input type="text" class="search" data-i="' + i + '" placeholder="Gõ để tìm dự án..." autocomplete="off">' +
+    '<div class="results" id="res' + i + '" style="display:none"></div>' +
+    '</div>';
+}
+
+function chosenRowHtml(r, i) {
+  var p = state.byId[r.projectId];
+  return '<div class="row">' +
+    '<div class="info"><div class="name">' + esc(p.TenDuAn) + '</div>' +
+    '<div class="desc">' + esc(p.MoTa || "(Chưa có mô tả)") + '</div></div>' +
+    '<input type="number" class="hours" data-i="' + i + '" min="0" step="0.5" inputmode="decimal" placeholder="0" value="' + esc(r.gio) + '">' +
+    '<button class="x" data-rm="' + i + '" title="Bỏ dự án này">×</button>' +
+    '</div>';
+}
 
 function render() {
-  var root = document.getElementById("app");
+  var root = $("app");
   if (state.projects.length === 0) {
     showMessage("Chưa có dự án nào Active."); return;
   }
-  var html = "<h3>Hôm nay</h3><p class=\"sub\">" + state.hoTen + " · Giờ khả dụng: " + state.available + "h</p>";
-  state.projects.forEach(function (p) {
-    var v = state.entries[p.ProjectID] || "";
-    html += "<div class=\"row\"><span>" + p.TenDuAn + "</span>" +
-      "<input type=\"number\" min=\"0\" step=\"0.5\" data-id=\"" + p.ProjectID + "\" placeholder=\"0\" value=\"" + v + "\"></div>";
-  });
-  html += "<div id=\"total\"></div><button id=\"reviewBtn\" disabled>Xem lại &amp; lưu</button>";
+  var html = '<h3>Hôm nay</h3><p class="sub">' + esc(state.hoTen) + ' · Giờ khả dụng: ' + state.available + 'h</p>';
+  state.rows.forEach(function (r, i) { html += r.projectId ? chosenRowHtml(r, i) : pickRowHtml(i); });
+  html += '<p class="count" id="count"></p>';
+  html += '<button id="addBtn" class="secondary">+ Thêm dự án khác</button>';
+  html += '<div id="total"></div><p class="hint" id="hint"></p>';
+  html += '<button id="reviewBtn" disabled>Xem lại &amp; lưu</button>';
   root.innerHTML = html;
-  Array.prototype.forEach.call(root.querySelectorAll("input"), function (inp) {
-    inp.addEventListener("input", onInput);
+
+  Array.prototype.forEach.call(root.querySelectorAll(".search"), bindSearch);
+  Array.prototype.forEach.call(root.querySelectorAll(".hours"), function (inp) {
+    inp.addEventListener("input", onHoursInput);
   });
-  document.getElementById("reviewBtn").addEventListener("click", showConfirm);
+  Array.prototype.forEach.call(root.querySelectorAll("[data-rm]"), function (btn) {
+    btn.addEventListener("click", function () { onRemoveRow(parseInt(btn.getAttribute("data-rm"), 10)); });
+  });
+  $("addBtn").addEventListener("click", onAddRow);
+  $("reviewBtn").addEventListener("click", showConfirm);
   updateTotal();
 }
 
-function onInput(e) {
-  var id = e.target.dataset.id;
-  var val = parseFloat(e.target.value);
-  if (val > 0) { state.entries[id] = val; } else { delete state.entries[id]; }
-  updateTotal();
+function bindSearch(inp) {
+  var i = parseInt(inp.getAttribute("data-i"), 10);
+  var box = $("res" + i);
+  inp.addEventListener("focus", function () { showResults(i, inp.value); });
+  inp.addEventListener("input", function () { showResults(i, inp.value); });
+  inp.addEventListener("blur", function () { setTimeout(function () { box.style.display = "none"; }, 200); });
+  box.addEventListener("click", function (e) {
+    var item = e.target.closest(".res-item");
+    if (item) pickProject(i, item.getAttribute("data-id"));
+  });
 }
 
-function sumEntries() {
-  return Object.keys(state.entries).reduce(function (s, k) { return s + state.entries[k]; }, 0);
+function showResults(i, query) {
+  var box = $("res" + i);
+  if (!box) return;
+  var tokens = norm(query).split(/\s+/).filter(Boolean);
+  var chosen = chosenIds();
+  var matches = state.projects.filter(function (p) {
+    if (chosen.indexOf(p.ProjectID) !== -1) return false; // đã chọn ở dòng khác thì không gợi ý lại
+    var name = norm(p.TenDuAn);
+    return tokens.every(function (t) { return name.indexOf(t) !== -1; });
+  });
+
+  var html = "";
+  matches.slice(0, MAX_RESULTS).forEach(function (p) {
+    html += '<div class="res-item" data-id="' + esc(p.ProjectID) + '">' +
+      '<div class="res-name">' + esc(p.TenDuAn) + '</div>' +
+      (p.MoTa ? '<div class="res-desc">' + esc(p.MoTa) + '</div>' : '') + '</div>';
+  });
+  if (matches.length === 0) {
+    html = '<div class="res-note">Không tìm thấy dự án phù hợp.</div>';
+  } else if (matches.length > MAX_RESULTS) {
+    html += '<div class="res-note">Còn ' + (matches.length - MAX_RESULTS) + ' dự án khác — gõ thêm để lọc.</div>';
+  }
+  box.innerHTML = html;
+  box.style.display = "block";
+}
+
+function pickProject(i, projectId) {
+  state.rows[i].projectId = projectId;
+  render();
+  var hours = document.querySelector('.hours[data-i="' + i + '"]');
+  if (hours) hours.focus();
+}
+
+function onAddRow() {
+  // Đang có sẵn 1 dòng chưa chọn dự án thì không thêm dòng trống thứ 2, chỉ đưa con trỏ vào dòng đó
+  var emptyIndex = -1;
+  state.rows.forEach(function (r, i) { if (!r.projectId && emptyIndex === -1) emptyIndex = i; });
+  if (emptyIndex === -1) {
+    state.rows.push(newRow());
+    emptyIndex = state.rows.length - 1;
+    render();
+  }
+  var inp = document.querySelector('.search[data-i="' + emptyIndex + '"]');
+  if (inp) inp.focus();
+}
+
+function onRemoveRow(i) {
+  if (state.rows.length === 1) { state.rows = [newRow()]; } else { state.rows.splice(i, 1); }
+  render();
+}
+
+function onHoursInput(e) {
+  var i = parseInt(e.target.getAttribute("data-i"), 10);
+  var v = parseFloat(e.target.value);
+  state.rows[i].gio = isNaN(v) ? "" : v;
+  updateTotal();
 }
 
 function updateTotal() {
-  var total = sumEntries();
-  var el = document.getElementById("total");
-  var ok = total === state.available;
-  el.innerHTML = "<span>Tổng</span><span class=\"" + (ok ? "ok" : "error") + "\">" + total + "h / " + state.available + "h</span>";
-  document.getElementById("reviewBtn").disabled = !ok;
+  var total = 0, count = 0, incomplete = false;
+  state.rows.forEach(function (r) {
+    if (!r.projectId) return;
+    count++;
+    if (r.gio > 0) { total += r.gio; } else { incomplete = true; }
+  });
+  var ok = count > 0 && !incomplete && Math.abs(total - state.available) < 1e-9;
+
+  $("count").textContent = "Đã chọn: " + count + " dự án";
+  $("total").innerHTML = '<span>Tổng</span><span class="' + (ok ? "ok" : "error") + '">' + fmt(total) + 'h / ' + state.available + 'h</span>';
+
+  var hint = "";
+  if (incomplete) { hint = "Có dự án đã chọn nhưng chưa nhập giờ."; }
+  else if (total > state.available + 1e-9) { hint = "Tổng giờ vượt quá giờ khả dụng " + fmt(total - state.available) + "h."; }
+  else if (count > 0 && total < state.available) { hint = "Còn thiếu " + fmt(state.available - total) + "h."; }
+  $("hint").textContent = hint;
+  $("reviewBtn").disabled = !ok;
 }
 
 // ---- Màn hình 2: xem lại & xác nhận ----
 
+function buildEntries() {
+  return state.rows
+    .filter(function (r) { return r.projectId && r.gio > 0; })
+    .map(function (r) { return { projectId: r.projectId, soGio: r.gio }; });
+}
+
 function showConfirm() {
-  var root = document.getElementById("app");
-  var html = "<h3>Xem lại trước khi lưu</h3><p class=\"sub\">" + state.hoTen + " · Hôm nay</p>";
-  state.projects.forEach(function (p) {
-    var v = state.entries[p.ProjectID];
-    if (v > 0) {
-      html += "<div class=\"row\"><span>" + p.TenDuAn + "</span><span>" + v + "h</span></div>";
-    }
+  var root = $("app");
+  var html = '<h3>Xem lại trước khi lưu</h3><p class="sub">' + esc(state.hoTen) + ' · Hôm nay</p>';
+  var total = 0;
+  buildEntries().forEach(function (e) {
+    var p = state.byId[e.projectId];
+    total += e.soGio;
+    html += '<div class="row"><div class="info"><div class="name">' + esc(p.TenDuAn) + '</div>' +
+      '<div class="desc">' + esc(p.MoTa || "(Chưa có mô tả)") + '</div></div>' +
+      '<div class="name">' + fmt(e.soGio) + 'h</div></div>';
   });
-  var total = sumEntries();
-  html += "<div id=\"total\"><span>Tổng</span><span class=\"ok\">" + total + "h / " + state.available + "h</span></div>";
-  html += "<button id=\"confirmBtn\">✅ Xác nhận, lưu</button>";
-  html += "<button id=\"backBtn\" class=\"secondary\">✏️ Sửa lại</button>";
+  html += '<div id="total"><span>Tổng</span><span class="ok">' + fmt(total) + 'h / ' + state.available + 'h</span></div>';
+  html += '<button id="confirmBtn">✅ Xác nhận, lưu</button>';
+  html += '<button id="backBtn" class="secondary">✏️ Sửa lại</button>';
   root.innerHTML = html;
-  document.getElementById("confirmBtn").addEventListener("click", onConfirm);
-  document.getElementById("backBtn").addEventListener("click", render);
+  $("confirmBtn").addEventListener("click", onConfirm);
+  $("backBtn").addEventListener("click", render);
 }
 
 function onConfirm() {
-  document.getElementById("confirmBtn").disabled = true;
-  document.getElementById("backBtn").disabled = true;
-  var entries = Object.keys(state.entries).map(function (id) { return { projectId: id, soGio: state.entries[id] }; });
-  callApi("submit", { entries: entries }).then(function (res) {
+  $("confirmBtn").disabled = true;
+  $("backBtn").disabled = true;
+  callApi("submit", { entries: buildEntries() }).then(function (res) {
     if (res.ok) {
       showMessage("Đã lưu thành công!", "ok");
       setTimeout(function () { tg.close(); }, 1200);
@@ -125,12 +270,21 @@ function onConfirm() {
 }
 
 function showErrorWithBack(text) {
-  var root = document.getElementById("app");
-  root.innerHTML = "<p class=\"msg error\">" + text + "</p><button id=\"backBtn2\">Quay lại sửa</button>";
-  document.getElementById("backBtn2").addEventListener("click", render);
+  showMessage(text, "error");
+  var btn = document.createElement("button");
+  btn.id = "backBtn2";
+  btn.textContent = "Quay lại sửa";
+  btn.addEventListener("click", render);
+  $("app").appendChild(btn);
 }
 
-init();
+if (!tg) {
+  showMessage("Không tải được Telegram SDK - hãy mở Mini App từ trong Telegram.", "error");
+} else {
+  tg.ready();
+  tg.expand();
+  init();
+}
 </script>
 </body>
 </html>
