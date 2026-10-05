@@ -41,15 +41,22 @@ button.x{width:32px;height:32px;margin:0 0 0 8px;padding:0;background:transparen
 .msg{text-align:center;padding:40px 0;color:var(--tg-theme-hint-color,#888);}
 .error{color:#e53935;}
 .ok{color:#2e7d32;}
+#ver{margin:28px 0 0;text-align:center;font-size:11px;color:var(--tg-theme-hint-color,#888);}
 </style>
 </head>
 <body>
 <div id="app"><p class="msg">Đang tải...</p></div>
+<p id="ver"></p>
 <script>
 // ĐÃ GẮN SẴN URL Apps Script hiện tại - nếu sau này đổi deployment/WEB_APP_URL, phải sửa đúng dòng này
 // rồi tải lại file này lên GitHub Pages (không tự đồng bộ với Script Properties bên Apps Script).
 var API_URL = "https://script.google.com/macros/s/AKfycbzbUMVtBrj3qXS-R6kmHLNY0S9OnnR_CagHrGjOgd5NJfxJ8X0Jj8dVRWUvrwiehkje/exec";
 
+// Phiên bản giao diện - đổi số này mỗi lần sửa file; khớp với PHIEN_BAN_MAY_CHU trong 07_MiniAppApi.gs.
+// Hiện ở chân trang để biết ngay trang đang mở có đúng bản mới nhất không (GitHub Pages / Telegram có cache).
+var CLIENT_VERSION = "2026-10-05.8";
+
+var BUOC_GIO = 0.5; // mỗi dự án chỉ nhập bội số của 0,5 giờ (đã chốt 2026-10-05); máy chủ cũng kiểm tra lại
 var MAX_RESULTS = 10; // số dự án tối đa hiện trong danh sách gợi ý mỗi lần tìm
 
 var tg = window.Telegram ? window.Telegram.WebApp : null;
@@ -70,14 +77,27 @@ function norm(s) {
 }
 
 function fmt(n) { return String(Math.round(n * 100) / 100); }
+function laBoiSo(v) { var k = v / BUOC_GIO; return Math.abs(k - Math.round(k)) < 1e-9; }
 
 function callApi(action, extra) {
   var payload = Object.assign({ action: action, initData: tg ? tg.initData : "" }, extra || {});
   return fetch(API_URL, { method: "POST", body: JSON.stringify(payload) }).then(function (r) { return r.json(); });
 }
 
+function showVersion(data, loi) {
+  var el = $("ver");
+  if (!el) return;
+  var may = loi ? "không kết nối được"
+    : data && data.version ? data.version
+    : data && data.ok ? "bản cũ — chưa cập nhật" : "không rõ";
+  var ms = (data && typeof data.ms === "number") ? " · xử lý " + data.ms + "ms" : ""; // thời gian máy chủ xử lý lần gọi gần nhất
+  el.textContent = "Giao diện " + CLIENT_VERSION + (data || loi ? " · Máy chủ " + may : "") + ms;
+}
+
 function init() {
+  showVersion(null, false);
   callApi("init").then(function (data) {
+    showVersion(data, false);
     if (!data.ok) { showMessage(data.error, "error"); return; }
     state.hoTen = data.hoTen;
     state.available = data.available;
@@ -85,10 +105,14 @@ function init() {
     state.byId = {};
     data.projects.forEach(function (p) { state.byId[p.ProjectID] = p; });
     state.days = data.days || [];
-    if (state.days.length === 0) { showMessage("Không xác định được ngày để điền timesheet.", "error"); return; }
+    if (state.days.length === 0) {
+      showMessage(data.version ? "Không xác định được ngày để điền timesheet."
+        : "Máy chủ chưa được cập nhật lên phiên bản mới (thiếu thông tin ngày). Vui lòng báo C&B/IT cập nhật rồi mở lại.", "error");
+      return;
+    }
     state.di = state.days.length - 1; // mở lên ở "hôm nay" (ngày mới nhất)
     showDay();
-  }).catch(function (err) { showMessage("Lỗi kết nối: " + err, "error"); });
+  }).catch(function (err) { showVersion(null, true); showMessage("Lỗi kết nối: " + err, "error"); });
 }
 
 function showMessage(text, cls) {
@@ -233,19 +257,20 @@ function onHoursInput(e) {
 }
 
 function updateTotal() {
-  var total = 0, count = 0, incomplete = false;
+  var total = 0, count = 0, incomplete = false, saiBuoc = false;
   state.rows.forEach(function (r) {
     if (!r.projectId) return;
     count++;
-    if (r.gio > 0) { total += r.gio; } else { incomplete = true; }
+    if (r.gio > 0) { total += r.gio; if (!laBoiSo(r.gio)) saiBuoc = true; } else { incomplete = true; }
   });
-  var ok = count > 0 && !incomplete && Math.abs(total - state.available) < 1e-9;
+  var ok = count > 0 && !incomplete && !saiBuoc && Math.abs(total - state.available) < 1e-9;
 
   $("count").textContent = "Đã chọn: " + count + " dự án";
   $("total").innerHTML = '<span>Tổng</span><span class="' + (ok ? "ok" : "error") + '">' + fmt(total) + 'h / ' + state.available + 'h</span>';
 
   var hint = "";
   if (incomplete) { hint = "Có dự án đã chọn nhưng chưa nhập giờ."; }
+  else if (saiBuoc) { hint = "Số giờ phải là bội số của 0,5 (VD 0,5; 1; 1,5)."; }
   else if (total > state.available + 1e-9) { hint = "Tổng giờ vượt quá giờ khả dụng " + fmt(total - state.available) + "h."; }
   else if (count > 0 && total < state.available) { hint = "Còn thiếu " + fmt(state.available - total) + "h."; }
   $("hint").textContent = hint;
@@ -294,6 +319,7 @@ function onConfirm() {
   var d = cur();
   callApi("submit", { entries: buildEntries(), ngay: d.ngay }).then(function (res) {
     submitting = false;
+    showVersion(res, false);
     if (res.status === "locked") { showLocked(res.error); return; }
     if (!res.ok) { showErrorWithBack(res.error); return; }
 
@@ -443,6 +469,7 @@ function showErrorWithBack(text) {
 }
 
 if (!tg) {
+  showVersion(null, false);
   showMessage("Không tải được Telegram SDK - hãy mở Mini App từ trong Telegram.", "error");
 } else {
   tg.ready();
