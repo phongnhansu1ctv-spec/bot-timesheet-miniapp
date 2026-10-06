@@ -32,7 +32,8 @@ button.nav{width:40px;height:36px;margin:0;padding:0;background:transparent;colo
 button.nav:disabled{opacity:0.2;}
 .savedtitle{font-weight:600;font-size:15px;margin:8px 0 2px;}
 .note.warn{color:#b26a00;}
-#total{display:flex;justify-content:space-between;padding:14px 0 4px;font-weight:600;}
+h4.khoi{margin:18px 0 0;font-size:15px;}
+#total,#totalO{display:flex;justify-content:space-between;padding:14px 0 4px;font-weight:600;}
 .hint{font-size:12px;color:#e53935;margin:0 0 4px;min-height:14px;}
 button{width:100%;height:44px;border:none;border-radius:8px;background:var(--tg-theme-button-color,#2481cc);color:var(--tg-theme-button-text-color,#fff);font-size:15px;margin-top:8px;}
 button:disabled{opacity:0.4;}
@@ -54,17 +55,25 @@ var API_URL = "https://script.google.com/macros/s/AKfycbzbUMVtBrj3qXS-R6kmHLNY0S
 
 // Phiên bản giao diện - đổi số này mỗi lần sửa file; khớp với PHIEN_BAN_MAY_CHU trong 07_MiniAppApi.gs.
 // Hiện ở chân trang để biết ngay trang đang mở có đúng bản mới nhất không (GitHub Pages / Telegram có cache).
-var CLIENT_VERSION = "2026-10-05.9";
+var CLIENT_VERSION = "2026-10-06.11";
 
 var BUOC_GIO = 0.5; // mỗi dự án chỉ nhập bội số của 0,5 giờ (đã chốt 2026-10-05); máy chủ cũng kiểm tra lại
 var MAX_RESULTS = 10; // số dự án tối đa hiện trong danh sách gợi ý mỗi lần tìm
 
 var tg = window.Telegram ? window.Telegram.WebApp : null;
-var state = { hoTen: "", available: 8, projects: [], byId: {}, days: [], di: 0, rows: [newRow()], editing: false, drafts: {} };
+var state = { hoTen: "", available: 8, projects: [], byId: {}, days: [], di: 0, rows: [newRow()], otRows: [newRow()], editing: false, drafts: {} };
 
 function newRow() { return { projectId: "", gio: "" }; }
 function $(id) { return document.getElementById(id); }
 function cur() { return state.days[state.di]; } // ngày đang xem
+// Giờ khả dụng của ngày đang xem (máy chủ tính theo đơn nghỉ/muộn/sớm đã duyệt); thiếu thì dùng giá trị chung
+// Khối giờ: "" = giờ làm việc, "o" = giờ OT (2 khối riêng, mỗi khối có tổng riêng phải khớp)
+function rowsOf(kh) { return kh === "o" ? state.otRows : state.rows; }
+function coLamViec(d) { return !(d && typeof d.available === "number" && d.available <= 0); }   // ngày có giờ làm việc để điền
+function coOt(d) { return !!(d && typeof d.otGio === "number" && d.otGio > 0); }                   // ngày có giờ OT để điền
+function gioKhoi(kh) { return kh === "o" ? cur().otGio : gioKhaDung(); }
+function tongRows(list) { return (list || []).reduce(function (a, e) { return a + e.soGio; }, 0); }
+function gioKhaDung() { var d = cur(); return d && typeof d.available === "number" ? d.available : state.available; }
 
 function esc(s) {
   return String(s == null ? "" : s)
@@ -106,6 +115,7 @@ function init() {
     data.projects.forEach(function (p) { state.byId[p.ProjectID] = p; });
     state.days = data.days || [];
     if (state.days.length === 0) {
+      if (data.thongBao) { showMessage(data.thongBao); return; } // không phải lỗi: hôm nay không cần điền (cuối tuần, lễ, nghỉ cả ngày)
       showMessage(data.version ? "Không xác định được ngày để điền timesheet."
         : "Máy chủ chưa được cập nhật lên phiên bản mới (thiếu thông tin ngày). Vui lòng báo C&B/IT cập nhật rồi mở lại.", "error");
       return;
@@ -126,27 +136,38 @@ function showMessage(text, cls) {
 
 // ---- Màn hình 1: chọn dự án + nhập giờ ----
 
-function chosenIds() {
-  return state.rows.map(function (r) { return r.projectId; }).filter(Boolean);
+function chosenIds(kh) {
+  return rowsOf(kh).map(function (r) { return r.projectId; }).filter(Boolean);
 }
 
-function pickRowHtml(i) {
-  var rm = state.rows.length > 1 ? '<button class="x" data-rm="' + i + '" title="Xoá dòng">×</button>' : "";
+function pickRowHtml(i, kh) {
+  var rm = rowsOf(kh).length > 1 ? '<button class="x" data-rm="' + i + '" data-k="' + kh + '" title="Xoá dòng">×</button>' : "";
   return '<div class="pick">' +
     '<div class="pickhead"><label>Chọn dự án</label>' + rm + '</div>' +
-    '<input type="text" class="search" data-i="' + i + '" placeholder="Gõ để tìm dự án..." autocomplete="off">' +
-    '<div class="results" id="res' + i + '" style="display:none"></div>' +
+    '<input type="text" class="search" data-i="' + i + '" data-k="' + kh + '" placeholder="Gõ để tìm dự án..." autocomplete="off">' +
+    '<div class="results" id="res' + kh + i + '" style="display:none"></div>' +
     '</div>';
 }
 
-function chosenRowHtml(r, i) {
+function chosenRowHtml(r, i, kh) {
   var p = state.byId[r.projectId];
   return '<div class="row">' +
     '<div class="info"><div class="name">' + esc(p.TenDuAn) + '</div>' +
     '<div class="desc">' + esc(p.MoTa || "(Chưa có mô tả)") + '</div></div>' +
-    '<input type="number" class="hours" data-i="' + i + '" min="0" step="0.5" inputmode="decimal" placeholder="0" value="' + esc(r.gio) + '">' +
-    '<button class="x" data-rm="' + i + '" title="Bỏ dự án này">×</button>' +
+    '<input type="number" class="hours" data-i="' + i + '" data-k="' + kh + '" min="0" step="0.5" inputmode="decimal" placeholder="0" value="' + esc(r.gio) + '">' +
+    '<button class="x" data-rm="' + i + '" data-k="' + kh + '" title="Bỏ dự án này">×</button>' +
     '</div>';
+}
+
+// HTML của 1 khối (danh sách dòng + đếm + nút thêm + tổng + gợi ý). Khối làm việc giữ nguyên id cũ; khối OT thêm hậu tố O.
+function khoiHtml(kh) {
+  var s = kh === "o" ? "O" : "";
+  var html = "";
+  rowsOf(kh).forEach(function (r, i) { html += r.projectId ? chosenRowHtml(r, i, kh) : pickRowHtml(i, kh); });
+  html += '<p class="count" id="count' + s + '"></p>';
+  html += '<button id="addBtn' + s + '" class="secondary">+ Thêm dự án khác</button>';
+  html += '<div id="total' + s + '"></div><p class="hint" id="hint' + s + '"></p>';
+  return html;
 }
 
 function render() {
@@ -155,19 +176,21 @@ function render() {
     showMessage("Chưa có dự án nào Active."); return;
   }
   var d = cur();
+  var lv = coLamViec(d), ot = coOt(d);
   var html = dayBarHtml();
+  var gioTxt = (lv ? 'Giờ khả dụng: ' + fmt(gioKhaDung()) + 'h' : 'Ngày nghỉ') + (ot ? ' · Giờ OT: ' + fmt(d.otGio) + 'h' : '');
   if (state.editing) {
     html += '<p class="sub">' + esc(state.hoTen) + ' · Đang thay đổi timesheet — bản đã lưu' +
       (d.saved && d.saved.savedAt ? ' lúc ' + esc(d.saved.savedAt) : '') +
-      ' sẽ được thay bằng nội dung bạn xác nhận lưu<br>Hạn điền/sửa: ' + esc(d.han) + '</p>';
+      ' sẽ được thay bằng nội dung bạn xác nhận lưu<br>' + gioTxt + (d.lyDo ? ' (' + esc(d.lyDo) + ')' : '') +
+      '<br>Hạn điền/sửa: ' + esc(d.han) + '</p>';
   } else {
-    html += '<p class="sub">' + esc(state.hoTen) + ' · Chưa điền · Giờ khả dụng: ' + state.available +
-      'h<br>Hạn điền/sửa: ' + esc(d.han) + '</p>';
+    html += '<p class="sub">' + esc(state.hoTen) + ' · Chưa điền · ' + gioTxt +
+      (d.lyDo ? '<br>' + esc(d.lyDo) : '') + '<br>Hạn điền/sửa: ' + esc(d.han) + '</p>';
   }
-  state.rows.forEach(function (r, i) { html += r.projectId ? chosenRowHtml(r, i) : pickRowHtml(i); });
-  html += '<p class="count" id="count"></p>';
-  html += '<button id="addBtn" class="secondary">+ Thêm dự án khác</button>';
-  html += '<div id="total"></div><p class="hint" id="hint"></p>';
+  if (lv && ot) html += '<h4 class="khoi">Giờ làm việc</h4>';
+  if (lv) html += khoiHtml("");
+  if (ot) html += '<h4 class="khoi">Giờ OT</h4>' + khoiHtml("o");
   html += '<button id="reviewBtn" disabled>Xem lại &amp; lưu</button>';
   if (state.editing) html += '<button id="cancelEditBtn" class="secondary">Huỷ thay đổi, giữ bản đã lưu</button>';
   root.innerHTML = html;
@@ -178,9 +201,10 @@ function render() {
     inp.addEventListener("input", onHoursInput);
   });
   Array.prototype.forEach.call(root.querySelectorAll("[data-rm]"), function (btn) {
-    btn.addEventListener("click", function () { onRemoveRow(parseInt(btn.getAttribute("data-rm"), 10)); });
+    btn.addEventListener("click", function () { onRemoveRow(parseInt(btn.getAttribute("data-rm"), 10), btn.getAttribute("data-k") || ""); });
   });
-  $("addBtn").addEventListener("click", onAddRow);
+  if (lv) $("addBtn").addEventListener("click", function () { onAddRow(""); });
+  if (ot) $("addBtnO").addEventListener("click", function () { onAddRow("o"); });
   $("reviewBtn").addEventListener("click", showConfirm);
   if (state.editing) $("cancelEditBtn").addEventListener("click", onCancelEdit);
   updateTotal();
@@ -188,23 +212,24 @@ function render() {
 
 function bindSearch(inp) {
   var i = parseInt(inp.getAttribute("data-i"), 10);
-  var box = $("res" + i);
-  inp.addEventListener("focus", function () { showResults(i, inp.value); });
-  inp.addEventListener("input", function () { showResults(i, inp.value); });
+  var kh = inp.getAttribute("data-k") || "";
+  var box = $("res" + kh + i);
+  inp.addEventListener("focus", function () { showResults(i, inp.value, kh); });
+  inp.addEventListener("input", function () { showResults(i, inp.value, kh); });
   inp.addEventListener("blur", function () { setTimeout(function () { box.style.display = "none"; }, 200); });
   box.addEventListener("click", function (e) {
     var item = e.target.closest(".res-item");
-    if (item) pickProject(i, item.getAttribute("data-id"));
+    if (item) pickProject(i, item.getAttribute("data-id"), kh);
   });
 }
 
-function showResults(i, query) {
-  var box = $("res" + i);
+function showResults(i, query, kh) {
+  var box = $("res" + kh + i);
   if (!box) return;
   var tokens = norm(query).split(/\s+/).filter(Boolean);
-  var chosen = chosenIds();
+  var chosen = chosenIds(kh);
   var matches = state.projects.filter(function (p) {
-    if (chosen.indexOf(p.ProjectID) !== -1) return false; // đã chọn ở dòng khác thì không gợi ý lại
+    if (chosen.indexOf(p.ProjectID) !== -1) return false; // đã chọn ở dòng khác của CÙNG khối thì không gợi ý lại
     var name = norm(p.TenDuAn);
     return tokens.every(function (t) { return name.indexOf(t) !== -1; });
   });
@@ -224,84 +249,105 @@ function showResults(i, query) {
   box.style.display = "block";
 }
 
-function pickProject(i, projectId) {
-  state.rows[i].projectId = projectId;
+function pickProject(i, projectId, kh) {
+  rowsOf(kh)[i].projectId = projectId;
   render();
-  var hours = document.querySelector('.hours[data-i="' + i + '"]');
+  var hours = document.querySelector('.hours[data-i="' + i + '"][data-k="' + kh + '"]');
   if (hours) hours.focus();
 }
 
-function onAddRow() {
+function onAddRow(kh) {
   // Đang có sẵn 1 dòng chưa chọn dự án thì không thêm dòng trống thứ 2, chỉ đưa con trỏ vào dòng đó
+  var rows = rowsOf(kh);
   var emptyIndex = -1;
-  state.rows.forEach(function (r, i) { if (!r.projectId && emptyIndex === -1) emptyIndex = i; });
+  rows.forEach(function (r, i) { if (!r.projectId && emptyIndex === -1) emptyIndex = i; });
   if (emptyIndex === -1) {
-    state.rows.push(newRow());
-    emptyIndex = state.rows.length - 1;
+    rows.push(newRow());
+    emptyIndex = rows.length - 1;
     render();
   }
-  var inp = document.querySelector('.search[data-i="' + emptyIndex + '"]');
+  var inp = document.querySelector('.search[data-i="' + emptyIndex + '"][data-k="' + kh + '"]');
   if (inp) inp.focus();
 }
 
-function onRemoveRow(i) {
-  if (state.rows.length === 1) { state.rows = [newRow()]; } else { state.rows.splice(i, 1); }
+function onRemoveRow(i, kh) {
+  if (rowsOf(kh).length === 1) { if (kh === "o") state.otRows = [newRow()]; else state.rows = [newRow()]; }
+  else { rowsOf(kh).splice(i, 1); }
   render();
 }
 
 function onHoursInput(e) {
   var i = parseInt(e.target.getAttribute("data-i"), 10);
+  var kh = e.target.getAttribute("data-k") || "";
   var v = parseFloat(e.target.value);
-  state.rows[i].gio = isNaN(v) ? "" : v;
+  rowsOf(kh)[i].gio = isNaN(v) ? "" : v;
   updateTotal();
 }
 
-function updateTotal() {
+// Cập nhật đếm/tổng/gợi ý của 1 khối; trả true nếu khối đã khớp đúng giờ yêu cầu
+function capNhatKhoi(kh, kd) {
+  var s = kh === "o" ? "O" : "";
   var total = 0, count = 0, incomplete = false, saiBuoc = false;
-  state.rows.forEach(function (r) {
+  rowsOf(kh).forEach(function (r) {
     if (!r.projectId) return;
     count++;
     if (r.gio > 0) { total += r.gio; if (!laBoiSo(r.gio)) saiBuoc = true; } else { incomplete = true; }
   });
-  var ok = count > 0 && !incomplete && !saiBuoc && Math.abs(total - state.available) < 1e-9;
+  var ok = count > 0 && !incomplete && !saiBuoc && Math.abs(total - kd) < 1e-9;
 
-  $("count").textContent = "Đã chọn: " + count + " dự án";
-  $("total").innerHTML = '<span>Tổng</span><span class="' + (ok ? "ok" : "error") + '">' + fmt(total) + 'h / ' + state.available + 'h</span>';
+  $("count" + s).textContent = "Đã chọn: " + count + " dự án";
+  $("total" + s).innerHTML = '<span>Tổng</span><span class="' + (ok ? "ok" : "error") + '">' + fmt(total) + 'h / ' + kd + 'h</span>';
 
   var hint = "";
+  var tenKhoi = kh === "o" ? "giờ OT" : "giờ khả dụng";
   if (incomplete) { hint = "Có dự án đã chọn nhưng chưa nhập giờ."; }
   else if (saiBuoc) { hint = "Số giờ phải là bội số của 0,5 (VD 0,5; 1; 1,5)."; }
-  else if (total > state.available + 1e-9) { hint = "Tổng giờ vượt quá giờ khả dụng " + fmt(total - state.available) + "h."; }
-  else if (count > 0 && total < state.available) { hint = "Còn thiếu " + fmt(state.available - total) + "h."; }
-  $("hint").textContent = hint;
+  else if (total > kd + 1e-9) { hint = "Tổng giờ vượt quá " + tenKhoi + " " + fmt(total - kd) + "h."; }
+  else if (count > 0 && total < kd) { hint = "Còn thiếu " + fmt(kd - total) + "h."; }
+  $("hint" + s).textContent = hint;
+  return ok;
+}
+
+function updateTotal() {
+  var d = cur();
+  var ok = true;
+  if (coLamViec(d)) ok = capNhatKhoi("", gioKhaDung()) && ok;
+  if (coOt(d)) ok = capNhatKhoi("o", d.otGio) && ok;
   $("reviewBtn").disabled = !ok;
 }
 
 // ---- Màn hình 2: xem lại & xác nhận ----
 
-function buildEntries() {
-  return state.rows
+function buildEntries(kh) {
+  return rowsOf(kh || "")
     .filter(function (r) { return r.projectId && r.gio > 0; })
     .map(function (r) { return { projectId: r.projectId, soGio: r.gio }; });
 }
 
-function showConfirm() {
-  var root = $("app");
-  var d = cur();
-  var html = '<h3>Xem lại trước khi lưu</h3><p class="sub">' + esc(state.hoTen) + ' · ' + esc(d.nhan) + ' ' + esc(d.ddmm) + ' · ' + esc(d.thu) + '</p>';
-  if (state.editing) {
-    html += '<p class="note warn">Bản đã lưu' + (d.saved && d.saved.savedAt ? ' lúc ' + esc(d.saved.savedAt) : '') +
-      ' sẽ bị xoá và thay bằng nội dung dưới đây.</p>';
-  }
-  var total = 0;
-  buildEntries().forEach(function (e) {
+function khoiXacNhanHtml(kh, gio) {
+  var html = "", total = 0;
+  buildEntries(kh).forEach(function (e) {
     var p = state.byId[e.projectId];
     total += e.soGio;
     html += '<div class="row"><div class="info"><div class="name">' + esc(p.TenDuAn) + '</div>' +
       '<div class="desc">' + esc(p.MoTa || "(Chưa có mô tả)") + '</div></div>' +
       '<div class="name">' + fmt(e.soGio) + 'h</div></div>';
   });
-  html += '<div id="total"><span>Tổng</span><span class="ok">' + fmt(total) + 'h / ' + state.available + 'h</span></div>';
+  return html + '<div id="total' + (kh === "o" ? "O" : "") + '"><span>Tổng</span><span class="ok">' + fmt(total) + 'h / ' + fmt(gio) + 'h</span></div>';
+}
+
+function showConfirm() {
+  var root = $("app");
+  var d = cur();
+  var lv = coLamViec(d), ot = coOt(d);
+  var html = '<h3>Xem lại trước khi lưu</h3><p class="sub">' + esc(state.hoTen) + ' · ' + esc(d.nhan) + ' ' + esc(d.ddmm) + ' · ' + esc(d.thu) + '</p>';
+  if (state.editing) {
+    html += '<p class="note warn">Bản đã lưu' + (d.saved && d.saved.savedAt ? ' lúc ' + esc(d.saved.savedAt) : '') +
+      ' sẽ bị xoá và thay bằng nội dung dưới đây.</p>';
+  }
+  if (lv && ot) html += '<h4 class="khoi">Giờ làm việc</h4>';
+  if (lv) html += khoiXacNhanHtml("", gioKhaDung());
+  if (ot) html += '<h4 class="khoi">Giờ OT</h4>' + khoiXacNhanHtml("o", d.otGio);
   html += '<button id="confirmBtn">✅ Xác nhận, lưu</button>';
   html += '<button id="backBtn" class="secondary">✏️ Sửa lại</button>';
   root.innerHTML = html;
@@ -317,16 +363,17 @@ function onConfirm() {
   $("confirmBtn").disabled = true;
   $("backBtn").disabled = true;
   var d = cur();
-  callApi("submit", { entries: buildEntries(), ngay: d.ngay }).then(function (res) {
+  callApi("submit", { entries: buildEntries(""), otEntries: buildEntries("o"), ngay: d.ngay }).then(function (res) {
     submitting = false;
     showVersion(res, false);
     if (res.status === "locked") { showLocked(res.error); return; }
     if (!res.ok) { showErrorWithBack(res.error); return; }
 
-    d.saved = { savedAt: res.savedAt, entries: res.entries };
+    d.saved = { savedAt: res.savedAt, entries: res.entries, otEntries: res.otEntries || [] };
     delete state.drafts[d.ngay];
     state.editing = false;
     state.rows = [newRow()];
+    state.otRows = [newRow()];
     var ngayLabel = d.nhan.toLowerCase();
     if (res.status === "already_saved") {
       showSaved("Timesheet " + ngayLabel + " đã được ghi nhận",
@@ -392,7 +439,7 @@ function bindDayBar() {
 function goDay(delta) {
   var ni = state.di + delta;
   if (ni < 0 || ni >= state.days.length) return;
-  state.drafts[cur().ngay] = { rows: state.rows, editing: state.editing };
+  state.drafts[cur().ngay] = { rows: state.rows, otRows: state.otRows, editing: state.editing };
   state.di = ni;
   showDay();
 }
@@ -401,16 +448,41 @@ function goDay(delta) {
 function showDay() {
   var d = cur();
   var dr = state.drafts[d.ngay];
-  if (dr) { state.rows = dr.rows; state.editing = dr.editing; }
-  else { state.rows = [newRow()]; state.editing = false; }
-  if (d.saved && !state.editing) {
+  if (dr) { state.rows = dr.rows; state.otRows = dr.otRows || [newRow()]; state.editing = dr.editing; }
+  else { state.rows = [newRow()]; state.otRows = [newRow()]; state.editing = false; }
+  if (d.readonly && !d.saved) {
+    showKhongDien();
+  } else if (d.saved && !state.editing) {
     showSaved("Timesheet " + d.nhan.toLowerCase() + " đã được ghi nhận", "", false);
   } else {
     render();
   }
 }
 
+// Ngày không cần điền (cuối tuần / lễ / nghỉ cả ngày / chỉ có OT): chỉ hiện lý do, không có form
+function showKhongDien() {
+  var d = cur();
+  $("app").innerHTML = dayBarHtml() + '<p class="sub">' + esc(state.hoTen) + '</p><p class="note warn">' +
+    esc(d.canhBao || "Ngày này không cần điền timesheet.") + '</p><button id="closeBtn" class="secondary">Đóng</button>';
+  bindDayBar();
+  $("closeBtn").addEventListener("click", function () { tg.close(); });
+}
+
 // Màn "đã ghi nhận": hiện bản timesheet của ngày đang xem + giờ ghi nhận, kèm nút Thay đổi (còn trong hạn sửa)
+function khoiDaLuuHtml(list) {
+  var html = "";
+  (list || []).forEach(function (e) {
+    var p = state.byId[e.projectId];
+    // Tin dữ liệu server gửi kèm; chỉ dùng danh sách dự án trong máy khi server không gửi trường đó
+    var ten = e.ten !== undefined ? e.ten : (p ? p.TenDuAn : e.projectId);
+    var moTa = e.moTa !== undefined ? e.moTa : (p ? p.MoTa : "");
+    html += '<div class="row"><div class="info"><div class="name">' + esc(ten) + '</div>' +
+      '<div class="desc">' + esc(moTa || "(Chưa có mô tả)") + '</div></div>' +
+      '<div class="name">' + fmt(e.soGio) + 'h</div></div>';
+  });
+  return html;
+}
+
 function showSaved(title, note, isWarning) {
   var d = cur();
   var s = d.saved;
@@ -418,36 +490,54 @@ function showSaved(title, note, isWarning) {
   var html = dayBarHtml() + '<p class="savedtitle">' + esc(title) + '</p><p class="sub">' + esc(state.hoTen) +
     (s.savedAt ? ' · Ghi nhận lúc ' + esc(s.savedAt) : '') + '</p>';
   if (note) html += '<p class="note' + (isWarning ? ' warn' : '') + '">' + esc(note) + '</p>';
-  var total = 0;
-  (s.entries || []).forEach(function (e) {
-    var p = state.byId[e.projectId];
-    // Tin dữ liệu server gửi kèm; chỉ dùng danh sách dự án trong máy khi server không gửi trường đó
-    var ten = e.ten !== undefined ? e.ten : (p ? p.TenDuAn : e.projectId);
-    var moTa = e.moTa !== undefined ? e.moTa : (p ? p.MoTa : "");
-    total += e.soGio;
-    html += '<div class="row"><div class="info"><div class="name">' + esc(ten) + '</div>' +
-      '<div class="desc">' + esc(moTa || "(Chưa có mô tả)") + '</div></div>' +
-      '<div class="name">' + fmt(e.soGio) + 'h</div></div>';
-  });
-  html += '<div id="total"><span>Tổng</span><span class="ok">' + fmt(total) + 'h</span></div>';
-  html += '<button id="editBtn">✏️ Thay đổi</button>';
+  var totW = tongRows(s.entries), totO = tongRows(s.otEntries);
+  var coKhoiOt = (s.otEntries || []).length > 0 || coOt(d);
+  var lechW = !d.readonly && typeof d.available === "number" && Math.abs(totW - d.available) > 1e-9;
+  var lechO = !d.readonly && ((coOt(d) && Math.abs(totO - d.otGio) > 1e-9) || (!coOt(d) && totO > 0));
+  var lech = lechW || lechO;
+  if (coKhoiOt) {
+    html += '<h4 class="khoi">Giờ làm việc</h4>' + khoiDaLuuHtml(s.entries) +
+      '<div id="total"><span>Tổng</span><span class="' + (lechW ? 'error' : 'ok') + '">' + fmt(totW) + 'h</span></div>' +
+      '<h4 class="khoi">Giờ OT</h4>' + khoiDaLuuHtml(s.otEntries) +
+      '<div id="totalO"><span>Tổng</span><span class="' + (lechO ? 'error' : 'ok') + '">' + fmt(totO) + 'h</span></div>';
+  } else {
+    html += khoiDaLuuHtml(s.entries) + '<div id="total"><span>Tổng</span><span class="' + (lech ? 'error' : 'ok') + '">' + fmt(totW) + 'h</span></div>';
+  }
+  if (d.readonly) {
+    html += '<p class="note warn">' + esc(d.canhBao || "Ngày này không cần điền timesheet, bản đã lưu chỉ để xem.") + '</p>';
+  } else if (lech) {
+    var ctW = 'hiện là ' + fmt(d.available) + 'h' + (d.lyDo ? ' (' + esc(d.lyDo) + ')' : '') + ' nhưng bạn đã điền ' + fmt(totW) + 'h';
+    var ctO = 'hiện là ' + fmt(coOt(d) ? d.otGio : 0) + 'h nhưng bạn đã điền ' + fmt(totO) + 'h';
+    var cau = lechW && !lechO ? 'Giờ khả dụng ngày này ' + ctW
+      : !lechW && lechO ? 'Giờ OT ngày này ' + ctO
+      : 'Số giờ của ngày này đã thay đổi: giờ khả dụng ' + ctW + '; giờ OT ' + ctO;
+    html += '<p class="note warn">' + cau + '. Bấm "Thay đổi" để cập nhật lại cho khớp.</p>';
+  }
+  if (!d.readonly) html += '<button id="editBtn">✏️ Thay đổi</button>';
   html += '<button id="closeBtn" class="secondary">Đóng</button>';
-  html += '<p class="hint" style="color:var(--tg-theme-hint-color,#888);margin-top:10px">Bạn có thể thay đổi timesheet này đến ' + esc(d.han) + '.</p>';
+  if (!d.readonly) html += '<p class="hint" style="color:var(--tg-theme-hint-color,#888);margin-top:10px">Bạn có thể thay đổi timesheet này đến ' + esc(d.han) + '.</p>';
   root.innerHTML = html;
   bindDayBar();
-  $("editBtn").addEventListener("click", onEdit);
+  if ($("editBtn")) $("editBtn").addEventListener("click", onEdit);
   $("closeBtn").addEventListener("click", function () { tg.close(); });
 }
 
-// Vào chế độ thay đổi: form điền sẵn đúng các dự án + giờ đã lưu
+// Vào chế độ thay đổi: form điền sẵn đúng các dự án + giờ đã lưu (cả 2 khối)
 function onEdit() {
-  state.rows = cur().saved.entries.map(function (e) {
-    if (!state.byId[e.projectId]) {
-      // dự án đã bị đóng sau khi lưu: vẫn hiện được tên, server sẽ báo nếu nhân viên giữ nguyên nó khi lưu
-      state.byId[e.projectId] = { ProjectID: e.projectId, TenDuAn: e.ten, MoTa: e.moTa };
-    }
-    return { projectId: e.projectId, gio: e.soGio };
-  });
+  var s = cur().saved;
+  var doiSangRows = function (list) {
+    return (list || []).map(function (e) {
+      if (!state.byId[e.projectId]) {
+        // dự án đã bị đóng sau khi lưu: vẫn hiện được tên, server sẽ báo nếu nhân viên giữ nguyên nó khi lưu
+        state.byId[e.projectId] = { ProjectID: e.projectId, TenDuAn: e.ten, MoTa: e.moTa };
+      }
+      return { projectId: e.projectId, gio: e.soGio };
+    });
+  };
+  state.rows = doiSangRows(s.entries);
+  state.otRows = doiSangRows(s.otEntries);
+  if (state.rows.length === 0) state.rows = [newRow()];
+  if (state.otRows.length === 0) state.otRows = [newRow()];
   state.editing = true;
   render();
 }
@@ -455,6 +545,7 @@ function onEdit() {
 function onCancelEdit() {
   state.editing = false;
   state.rows = [newRow()];
+  state.otRows = [newRow()];
   delete state.drafts[cur().ngay];
   showSaved("Timesheet " + cur().nhan.toLowerCase() + " đã được ghi nhận", "", false);
 }
