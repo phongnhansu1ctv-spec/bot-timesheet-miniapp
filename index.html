@@ -30,6 +30,7 @@ h3{margin:0 0 4px;}
 .daybar h3{flex:1;text-align:center;font-size:17px;margin:0;}
 button.nav{width:40px;height:36px;margin:0;padding:0;background:transparent;color:var(--tg-theme-text-color,#000);font-size:26px;line-height:1;flex:none;}
 button.nav:disabled{opacity:0.2;}
+textarea#lyDo{width:100%;box-sizing:border-box;font-size:16px;font-family:inherit;padding:8px 12px;margin-top:6px;border:1px solid var(--tg-theme-hint-color,#ccc);border-radius:8px;background:var(--tg-theme-bg-color,#fff);color:var(--tg-theme-text-color,#000);resize:vertical;}
 .savedtitle{font-weight:600;font-size:15px;margin:8px 0 2px;}
 .note.warn{color:#b26a00;}
 h4.khoi{margin:18px 0 0;font-size:15px;}
@@ -55,13 +56,13 @@ var API_URL = "https://script.google.com/macros/s/AKfycbzbUMVtBrj3qXS-R6kmHLNY0S
 
 // Phiên bản giao diện - đổi số này mỗi lần sửa file; khớp với PHIEN_BAN_MAY_CHU trong 07_MiniAppApi.gs.
 // Hiện ở chân trang để biết ngay trang đang mở có đúng bản mới nhất không (GitHub Pages / Telegram có cache).
-var CLIENT_VERSION = "2026-10-06.11";
+var CLIENT_VERSION = "2026-10-13.12";
 
 var BUOC_GIO = 0.5; // mỗi dự án chỉ nhập bội số của 0,5 giờ (đã chốt 2026-10-05); máy chủ cũng kiểm tra lại
 var MAX_RESULTS = 10; // số dự án tối đa hiện trong danh sách gợi ý mỗi lần tìm
 
 var tg = window.Telegram ? window.Telegram.WebApp : null;
-var state = { hoTen: "", available: 8, projects: [], byId: {}, days: [], di: 0, rows: [newRow()], otRows: [newRow()], editing: false, drafts: {} };
+var state = { hoTen: "", available: 8, projects: [], byId: {}, days: [], di: 0, rows: [newRow()], otRows: [newRow()], editing: false, drafts: {}, lyDoBoSung: "" };
 
 function newRow() { return { projectId: "", gio: "" }; }
 function $(id) { return document.getElementById(id); }
@@ -179,18 +180,26 @@ function render() {
   var lv = coLamViec(d), ot = coOt(d);
   var html = dayBarHtml();
   var gioTxt = (lv ? 'Giờ khả dụng: ' + fmt(gioKhaDung()) + 'h' : 'Ngày nghỉ') + (ot ? ' · Giờ OT: ' + fmt(d.otGio) + 'h' : '');
+  var bs = !!d.boSung; // ngày đã khoá nhưng được mở cho ĐIỀN BỔ SUNG (1 lần) - cần ghi lý do ngắn
+  var hanNhan = bs ? 'Hạn điền bổ sung: ' : 'Hạn điền/sửa: ';
   if (state.editing) {
     html += '<p class="sub">' + esc(state.hoTen) + ' · Đang thay đổi timesheet — bản đã lưu' +
       (d.saved && d.saved.savedAt ? ' lúc ' + esc(d.saved.savedAt) : '') +
       ' sẽ được thay bằng nội dung bạn xác nhận lưu<br>' + gioTxt + (d.lyDo ? ' (' + esc(d.lyDo) + ')' : '') +
-      '<br>Hạn điền/sửa: ' + esc(d.han) + '</p>';
+      '<br>' + hanNhan + esc(d.han) + '</p>';
   } else {
     html += '<p class="sub">' + esc(state.hoTen) + ' · Chưa điền · ' + gioTxt +
-      (d.lyDo ? '<br>' + esc(d.lyDo) : '') + '<br>Hạn điền/sửa: ' + esc(d.han) + '</p>';
+      (d.lyDo ? '<br>' + esc(d.lyDo) : '') + '<br>' + hanNhan + esc(d.han) + '</p>';
   }
+  if (bs) html += '<p class="note warn">' + esc(d.canhBao || 'Ngày này đã bị ghi 0h vì chưa điền. Bạn được điền bổ sung đúng 1 lần.') + '</p>';
   if (lv && ot) html += '<h4 class="khoi">Giờ làm việc</h4>';
   if (lv) html += khoiHtml("");
   if (ot) html += '<h4 class="khoi">Giờ OT</h4>' + khoiHtml("o");
+  if (bs) {
+    html += '<h4 class="khoi">Lý do chưa điền đúng hạn</h4>' +
+      '<textarea id="lyDo" maxlength="200" rows="3" placeholder="Ghi ngắn gọn lý do (VD: ốm, họp khách hàng cả ngày...)"></textarea>' +
+      '<p class="hint" id="hintLyDo"></p>';
+  }
   html += '<button id="reviewBtn" disabled>Xem lại &amp; lưu</button>';
   if (state.editing) html += '<button id="cancelEditBtn" class="secondary">Huỷ thay đổi, giữ bản đã lưu</button>';
   root.innerHTML = html;
@@ -207,6 +216,10 @@ function render() {
   if (ot) $("addBtnO").addEventListener("click", function () { onAddRow("o"); });
   $("reviewBtn").addEventListener("click", showConfirm);
   if (state.editing) $("cancelEditBtn").addEventListener("click", onCancelEdit);
+  if (bs) { // giá trị đặt bằng .value (không chèn vào HTML) nên mọi ký tự đều hiển thị như chữ
+    $("lyDo").value = state.lyDoBoSung;
+    $("lyDo").addEventListener("input", function (e) { state.lyDoBoSung = e.target.value; updateTotal(); });
+  }
   updateTotal();
 }
 
@@ -313,6 +326,11 @@ function updateTotal() {
   var ok = true;
   if (coLamViec(d)) ok = capNhatKhoi("", gioKhaDung()) && ok;
   if (coOt(d)) ok = capNhatKhoi("o", d.otGio) && ok;
+  if (d.boSung) { // ngày Bổ sung bắt buộc ghi lý do ngắn
+    var coLyDo = String(state.lyDoBoSung || "").trim().length > 0;
+    $("hintLyDo").textContent = coLyDo ? "" : "Vui lòng ghi lý do ngắn vì sao chưa điền đúng hạn.";
+    ok = ok && coLyDo;
+  }
   $("reviewBtn").disabled = !ok;
 }
 
@@ -348,6 +366,10 @@ function showConfirm() {
   if (lv && ot) html += '<h4 class="khoi">Giờ làm việc</h4>';
   if (lv) html += khoiXacNhanHtml("", gioKhaDung());
   if (ot) html += '<h4 class="khoi">Giờ OT</h4>' + khoiXacNhanHtml("o", d.otGio);
+  if (d.boSung) {
+    html += '<h4 class="khoi">Lý do</h4><p class="note">' + esc(String(state.lyDoBoSung || "").trim()) + '</p>' +
+      '<p class="note warn">Chỉ được điền bổ sung 1 lần: sau khi lưu bạn không sửa lại được.</p>';
+  }
   html += '<button id="confirmBtn">✅ Xác nhận, lưu</button>';
   html += '<button id="backBtn" class="secondary">✏️ Sửa lại</button>';
   root.innerHTML = html;
@@ -363,7 +385,9 @@ function onConfirm() {
   $("confirmBtn").disabled = true;
   $("backBtn").disabled = true;
   var d = cur();
-  callApi("submit", { entries: buildEntries(""), otEntries: buildEntries("o"), ngay: d.ngay }).then(function (res) {
+  var duLieu = { entries: buildEntries(""), otEntries: buildEntries("o"), ngay: d.ngay };
+  if (d.boSung) duLieu.lyDo = String(state.lyDoBoSung || "").trim();
+  callApi("submit", duLieu).then(function (res) {
     submitting = false;
     showVersion(res, false);
     if (res.status === "locked") { showLocked(res.error); return; }
@@ -374,6 +398,7 @@ function onConfirm() {
     state.editing = false;
     state.rows = [newRow()];
     state.otRows = [newRow()];
+    state.lyDoBoSung = "";
     var ngayLabel = d.nhan.toLowerCase();
     if (res.status === "already_saved") {
       showSaved("Timesheet " + ngayLabel + " đã được ghi nhận",
@@ -439,7 +464,7 @@ function bindDayBar() {
 function goDay(delta) {
   var ni = state.di + delta;
   if (ni < 0 || ni >= state.days.length) return;
-  state.drafts[cur().ngay] = { rows: state.rows, otRows: state.otRows, editing: state.editing };
+  state.drafts[cur().ngay] = { rows: state.rows, otRows: state.otRows, editing: state.editing, lyDoBoSung: state.lyDoBoSung };
   state.di = ni;
   showDay();
 }
@@ -448,8 +473,8 @@ function goDay(delta) {
 function showDay() {
   var d = cur();
   var dr = state.drafts[d.ngay];
-  if (dr) { state.rows = dr.rows; state.otRows = dr.otRows || [newRow()]; state.editing = dr.editing; }
-  else { state.rows = [newRow()]; state.otRows = [newRow()]; state.editing = false; }
+  if (dr) { state.rows = dr.rows; state.otRows = dr.otRows || [newRow()]; state.editing = dr.editing; state.lyDoBoSung = dr.lyDoBoSung || ""; }
+  else { state.rows = [newRow()]; state.otRows = [newRow()]; state.editing = false; state.lyDoBoSung = ""; }
   if (d.readonly && !d.saved) {
     showKhongDien();
   } else if (d.saved && !state.editing) {
