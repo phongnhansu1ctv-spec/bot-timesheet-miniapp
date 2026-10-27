@@ -58,7 +58,7 @@ var API_URL = "https://script.google.com/macros/s/AKfycbzbUMVtBrj3qXS-R6kmHLNY0S
 
 // Phiên bản giao diện - đổi số này mỗi lần sửa file; khớp với PHIEN_BAN_MAY_CHU trong 07_MiniAppApi.gs.
 // Hiện ở chân trang để biết ngay trang đang mở có đúng bản mới nhất không (GitHub Pages / Telegram có cache).
-var CLIENT_VERSION = "2026-10-19.2";
+var CLIENT_VERSION = "2026-10-26.1";
 
 var BUOC_GIO = 0.5; // mỗi dự án chỉ nhập bội số của 0,5 giờ (đã chốt 2026-10-05); máy chủ cũng kiểm tra lại
 var MAX_RESULTS = 10; // số dự án tối đa hiện trong danh sách gợi ý mỗi lần tìm
@@ -67,6 +67,12 @@ var tg = window.Telegram ? window.Telegram.WebApp : null;
 var state = { hoTen: "", available: 8, projects: [], byId: {}, days: [], di: 0, rows: [newRow()], otRows: [newRow()], editing: false, drafts: {}, lyDoBoSung: "", lyDoDc: "", lyDoDcKhac: "" };
 // Lý do điều chỉnh hồi tố (Q-61) - máy chủ gửi kèm danh sách trong từng ngày; đây là dự phòng
 var LY_DO_DC_MAC_DINH = ["Theo chấm công", "Đơn duyệt sau khi khoá", "Quên sửa", "Khác"];
+// Mở từ tin nhắc 1 ngày cụ thể (nút có ?ngay=yyyy-MM-dd, chốt 26/10/2026): chỉ hiện ngày đó, lưu xong báo các ngày còn cần điền.
+// Mở từ /timesheet hoặc menu (không có ?ngay=): như cũ, hiện tất cả ngày, mở ở hôm nay.
+function ngayTuDuongDan() {
+  try { var v = new URLSearchParams(window.location.search).get("ngay"); return /^\d{4}-\d{2}-\d{2}$/.test(v || "") ? v : ""; } catch (e) { return ""; }
+}
+state.focus = "";
 
 function newRow() { return { projectId: "", gio: "" }; }
 function $(id) { return document.getElementById(id); }
@@ -126,6 +132,10 @@ function init() {
       return;
     }
     state.di = state.days.length - 1; // mở lên ở "hôm nay" (ngày mới nhất)
+    var ngayMo = ngayTuDuongDan();
+    for (var i = 0; ngayMo && i < state.days.length; i++) {
+      if (state.days[i].ngay === ngayMo) { state.di = i; state.focus = ngayMo; break; } // ngày không còn trong danh sách (đã khoá): mở như bình thường
+    }
     showDay();
   }).catch(function (err) { showVersion(null, true); showMessage("Lỗi kết nối: " + err, "error"); });
 }
@@ -472,6 +482,7 @@ function onConfirm() {
     state.lyDoBoSung = "";
     state.lyDoDc = ""; state.lyDoDcKhac = "";
     var ngayLabel = d.nhan.toLowerCase();
+    if (state.focus) { showConLai(res); return; } // mở từ tin nhắc 1 ngày: báo các ngày còn cần điền
     if (res.status === "already_saved") {
       showSaved("Timesheet " + ngayLabel + " đã được ghi nhận",
         "Nội dung không thay đổi so với bản đã lưu nên không ghi thêm.", false);
@@ -483,6 +494,40 @@ function onConfirm() {
       showSuccess(res.savedAt);
     }
   }).catch(function (err) { submitting = false; showErrorWithBack("Lỗi kết nối: " + err); });
+}
+
+// Các ngày còn cần điền/xử lý (chưa có bản lưu, không phải ngày chỉ để xem), sắp từ cũ đến mới
+function ngayConCanDien() {
+  return state.days.filter(function (x) { return !x.readonly && !x.saved; })
+    .sort(function (a, b) { return a.ngay < b.ngay ? -1 : 1; });
+}
+
+// Sau khi lưu (mở từ tin nhắc 1 ngày): báo đã lưu + các ngày còn cần điền, nút "Điền tiếp <ngày>" và "Đóng"
+function showConLai(res) {
+  var d = cur();
+  var con = ngayConCanDien();
+  var tieuDe = res.status === "already_saved" ? "Timesheet " + d.thu + " " + d.ddmm + " đã được ghi nhận"
+    : res.status === "updated" ? "✅ Đã cập nhật timesheet " + d.thu + " " + d.ddmm : "✅ Đã lưu timesheet " + d.thu + " " + d.ddmm;
+  var html = '<p class="savedtitle">' + esc(tieuDe) + '</p>' +
+    (res.savedAt ? '<p class="sub">Ghi nhận lúc ' + esc(res.savedAt) + '</p>' : '');
+  if (con.length === 0) {
+    html += '<p class="note ok">Bạn đã điền đủ tất cả các ngày.</p><button id="closeBtn" class="secondary">Đóng</button>';
+    $("app").innerHTML = html;
+    $("closeBtn").addEventListener("click", function () { tg.close(); });
+    setTimeout(function () { tg.close(); }, 2500);
+    return;
+  }
+  html += '<p class="note">Bạn còn ' + con.length + ' ngày cần điền:</p><p class="note">' + con.map(function (x) {
+    return '• ' + esc(x.thu) + ' ' + esc(x.ddmm) + (x.boSung || x.dieuChinh ? ' (' + esc(x.nhan) + ')' : '') + ' — hạn ' + esc(x.han);
+  }).join('<br>') + '</p>';
+  html += '<button id="nextBtn">Điền tiếp ' + esc(con[0].thu) + ' ' + esc(con[0].ddmm) + '</button><button id="closeBtn" class="secondary">Đóng</button>';
+  $("app").innerHTML = html;
+  $("nextBtn").addEventListener("click", function () {
+    var k = state.days.indexOf(con[0]);
+    state.di = k; state.focus = con[0].ngay;
+    showDay();
+  });
+  $("closeBtn").addEventListener("click", function () { tg.close(); });
 }
 
 function showSuccess(savedAt) {
@@ -518,7 +563,7 @@ function showLocked(text) {
 function dayBarHtml() {
   var d = cur();
   var title = esc(d.nhan) + ' · ' + esc(d.ddmm) + ' · ' + esc(d.thu);
-  if (state.days.length <= 1) return '<div class="daybar"><h3>' + title + '</h3></div>';
+  if (state.days.length <= 1 || state.focus) return '<div class="daybar"><h3>' + title + '</h3></div>'; // mở từ tin nhắc: chỉ ngày đó
   return '<div class="daybar">' +
     '<button id="prevDay" class="nav"' + (state.di > 0 ? '' : ' disabled') + ' title="Ngày trước">‹</button>' +
     '<h3>' + title + '</h3>' +
@@ -627,6 +672,7 @@ function showSaved(title, note, isWarning) {
   $("closeBtn").addEventListener("click", function () { tg.close(); });
 }
 
+// Vào chế độ thay đổi: form điền sẵn đúng các dự án + giờ đã lưu (cả 2 khối)
 // Danh sách {projectId, soGio, ten, moTa} -> các dòng của form (dự án đã đóng vẫn hiện được tên)
 function doiSangRows(list) {
   return (list || []).map(function (e) {
@@ -638,7 +684,6 @@ function doiSangRows(list) {
   });
 }
 
-// Vào chế độ thay đổi: form điền sẵn đúng các dự án + giờ đã lưu (cả 2 khối)
 function onEdit() {
   var s = cur().saved;
   state.rows = doiSangRows(s.entries);
