@@ -50,6 +50,7 @@ button.x{width:32px;height:32px;margin:0 0 0 8px;padding:0;background:transparen
 </head>
 <body>
 <div id="app"><p class="msg">Đang tải...</p></div>
+<p id="dmWrap" style="display:none"><button id="dmBtn" class="secondary">📋 Danh mục dự án</button></p>
 <p id="ver"></p>
 <script>
 // ĐÃ GẮN SẴN URL Apps Script hiện tại - nếu sau này đổi deployment/WEB_APP_URL, phải sửa đúng dòng này
@@ -58,17 +59,73 @@ var API_URL = "https://script.google.com/macros/s/AKfycbzbUMVtBrj3qXS-R6kmHLNY0S
 
 // Phiên bản giao diện - đổi số này mỗi lần sửa file; khớp với PHIEN_BAN_MAY_CHU trong 07_MiniAppApi.gs.
 // Hiện ở chân trang để biết ngay trang đang mở có đúng bản mới nhất không (GitHub Pages / Telegram có cache).
-var CLIENT_VERSION = "2026-10-26.1";
+var CLIENT_VERSION = "2026-10-29.1";
 
 var BUOC_GIO = 0.5; // mỗi dự án chỉ nhập bội số của 0,5 giờ (đã chốt 2026-10-05); máy chủ cũng kiểm tra lại
 var MAX_RESULTS = 10; // số dự án tối đa hiện trong danh sách gợi ý mỗi lần tìm
 
 var tg = window.Telegram ? window.Telegram.WebApp : null;
-var state = { hoTen: "", available: 8, projects: [], byId: {}, days: [], di: 0, rows: [newRow()], otRows: [newRow()], editing: false, drafts: {}, lyDoBoSung: "", lyDoDc: "", lyDoDcKhac: "" };
+var state = { daGop: [], thongBao: "", hoTen: "", available: 8, projects: [], byId: {}, days: [], di: 0, rows: [newRow()], otRows: [newRow()], editing: false, drafts: {}, lyDoBoSung: "", lyDoDc: "", lyDoDcKhac: "" };
 // Lý do điều chỉnh hồi tố (Q-61) - máy chủ gửi kèm danh sách trong từng ngày; đây là dự phòng
 var LY_DO_DC_MAC_DINH = ["Theo chấm công", "Đơn duyệt sau khi khoá", "Quên sửa", "Khác"];
 // Mở từ tin nhắc 1 ngày cụ thể (nút có ?ngay=yyyy-MM-dd, chốt 26/10/2026): chỉ hiện ngày đó, lưu xong báo các ngày còn cần điền.
 // Mở từ /timesheet hoặc menu (không có ?ngay=): như cũ, hiện tất cả ngày, mở ở hôm nay.
+function xemTuDuongDan() {
+  try { return new URLSearchParams(window.location.search).get("xem") || ""; } catch (e) { return ""; }
+}
+// Tên để tìm: tên hiện tại + tên các dự án đã gộp vào (chốt 29/10/2026, Q-83)
+function tenTimKiem(p) { return [p.TenDuAn].concat(p.TenCu || []); }
+function khopTen(p, tokens) {
+  return tenTimKiem(p).filter(function (t) { var n = norm(t); return tokens.every(function (k) { return n.indexOf(k) !== -1; }); });
+}
+function ngayVN(n) { var x = String(n || "").split("-"); return x.length === 3 ? x[2] + "/" + x[1] + "/" + x[0] : ""; }
+
+// Màn Danh mục dự án: nhóm theo Phân loại, có tìm kiếm, mục "Đã gộp"
+function showDanhMuc() {
+  var html = '<div class="daybar"><button id="dmBack" class="nav" title="Quay lại">‹</button><h3>Danh mục dự án</h3><span style="width:40px"></span></div>' +
+    '<p class="sub">' + state.projects.length + ' dự án đang dùng' + (state.daGop.length ? ' · ' + state.daGop.length + ' dự án đã gộp' : '') + '</p>' +
+    '<input type="text" class="search" id="dmSearch" placeholder="Gõ để tìm dự án..." autocomplete="off"><div id="dmList"></div>';
+  $("app").innerHTML = html;
+  $("dmBack").addEventListener("click", function () {
+    if (state.days.length) showDay(); else showMessage(state.thongBao || "Hôm nay không có ngày cần điền timesheet.");
+  });
+  $("dmSearch").addEventListener("input", veDanhMuc);
+  veDanhMuc();
+}
+
+function veDanhMuc() {
+  var tokens = norm($("dmSearch").value).split(/\s+/).filter(Boolean);
+  var nhom = {};
+  state.projects.forEach(function (p) {
+    var khop = khopTen(p, tokens);
+    if (tokens.length && !khop.length) return;
+    var k = p.PhanLoai || "Khác";
+    (nhom[k] = nhom[k] || []).push(p);
+  });
+  var keys = Object.keys(nhom).sort(function (a, b) { return a === "Khác" ? 1 : b === "Khác" ? -1 : (a < b ? -1 : 1); });
+  var html = "";
+  keys.forEach(function (k) {
+    html += '<h4 class="khoi">' + esc(k) + ' (' + nhom[k].length + ')</h4>';
+    nhom[k].sort(function (a, b) { return String(a.TenDuAn).localeCompare(String(b.TenDuAn), "vi"); }).forEach(function (p) {
+      html += '<div class="row"><div class="info"><div class="name">' + esc(p.TenDuAn) + '</div>' +
+        (p.TenCu && p.TenCu.length ? '<div class="desc">Đã gộp từ: ' + esc(p.TenCu.join(", ")) + '</div>' : '') +
+        (p.MoTa ? '<div class="desc">' + esc(p.MoTa) + '</div>' : '') + '</div></div>';
+    });
+  });
+  var gop = state.daGop.filter(function (g) {
+    var n = norm(g.TenDuAn + " " + g.VaoTen);
+    return tokens.every(function (t) { return n.indexOf(t) !== -1; });
+  });
+  if (gop.length) {
+    html += '<h4 class="khoi">🔀 Đã gộp (' + gop.length + ')</h4>';
+    gop.forEach(function (g) {
+      html += '<div class="row"><div class="info"><div class="name">' + esc(g.TenDuAn) + ' → ' + esc(g.VaoTen) + '</div>' +
+        (g.NgayGop ? '<div class="desc">Từ ' + esc(ngayVN(g.NgayGop)) + '</div>' : '') + '</div></div>';
+    });
+  }
+  $("dmList").innerHTML = html || '<p class="note">Không tìm thấy dự án phù hợp.</p>';
+}
+
 function ngayTuDuongDan() {
   try { var v = new URLSearchParams(window.location.search).get("ngay"); return /^\d{4}-\d{2}-\d{2}$/.test(v || "") ? v : ""; } catch (e) { return ""; }
 }
@@ -124,7 +181,11 @@ function init() {
     state.projects = data.projects;
     state.byId = {};
     data.projects.forEach(function (p) { state.byId[p.ProjectID] = p; });
+    state.daGop = data.daGop || [];
+    state.thongBao = data.thongBao || "";
     state.days = data.days || [];
+    if (state.projects.length) { $("dmWrap").style.display = "block"; $("dmBtn").onclick = showDanhMuc; }
+    if (xemTuDuongDan() === "duan" && state.projects.length) { showDanhMuc(); return; } // mở từ lệnh /duan
     if (state.days.length === 0) {
       if (data.thongBao) { showMessage(data.thongBao); return; } // không phải lỗi: hôm nay không cần điền (cuối tuần, lễ, nghỉ cả ngày)
       showMessage(data.version ? "Không xác định được ngày để điền timesheet."
@@ -287,16 +348,18 @@ function showResults(i, query, kh) {
   if (!box) return;
   var tokens = norm(query).split(/\s+/).filter(Boolean);
   var chosen = chosenIds(kh);
+  var khopCu = {};
   var matches = state.projects.filter(function (p) {
     if (chosen.indexOf(p.ProjectID) !== -1) return false; // đã chọn ở dòng khác của CÙNG khối thì không gợi ý lại
-    var name = norm(p.TenDuAn);
-    return tokens.every(function (t) { return name.indexOf(t) !== -1; });
+    var k = khopTen(p, tokens); // khớp tên hiện tại hoặc tên dự án đã gộp vào
+    if (k.length && k.indexOf(p.TenDuAn) < 0) khopCu[p.ProjectID] = k;
+    return k.length > 0;
   });
 
   var html = "";
   matches.slice(0, MAX_RESULTS).forEach(function (p) {
     html += '<div class="res-item" data-id="' + esc(p.ProjectID) + '">' +
-      '<div class="res-name">' + esc(p.TenDuAn) + '</div>' +
+      '<div class="res-name">' + esc(p.TenDuAn) + (khopCu[p.ProjectID] ? ' (đã gộp từ ' + esc(khopCu[p.ProjectID].join(", ")) + ')' : '') + '</div>' +
       (p.MoTa ? '<div class="res-desc">' + esc(p.MoTa) + '</div>' : '') + '</div>';
   });
   if (matches.length === 0) {
