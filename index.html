@@ -50,7 +50,7 @@ button.x{width:32px;height:32px;margin:0 0 0 8px;padding:0;background:transparen
 </head>
 <body>
 <div id="app"><p class="msg">Đang tải...</p></div>
-<p id="dmWrap" style="display:none"><button id="dmBtn" class="secondary">📋 Danh mục dự án</button></p>
+<p id="dmWrap" style="display:none"><button id="dmThangBtn" class="secondary" style="display:none">⭐ Dự án của tôi</button><button id="dmBtn" class="secondary">📋 Danh mục dự án</button><button id="slBtn" class="secondary" style="display:none">✏️ Yêu cầu sửa timesheet</button></p>
 <p id="ver"></p>
 <script>
 // ĐÃ GẮN SẴN URL Apps Script hiện tại - nếu sau này đổi deployment/WEB_APP_URL, phải sửa đúng dòng này
@@ -59,13 +59,13 @@ var API_URL = "https://script.google.com/macros/s/AKfycbzbUMVtBrj3qXS-R6kmHLNY0S
 
 // Phiên bản giao diện - đổi số này mỗi lần sửa file; khớp với PHIEN_BAN_MAY_CHU trong 07_MiniAppApi.gs.
 // Hiện ở chân trang để biết ngay trang đang mở có đúng bản mới nhất không (GitHub Pages / Telegram có cache).
-var CLIENT_VERSION = "2026-10-29.1";
+var CLIENT_VERSION = "2026-11-01.1";
 
 var BUOC_GIO = 0.5; // mỗi dự án chỉ nhập bội số của 0,5 giờ (đã chốt 2026-10-05); máy chủ cũng kiểm tra lại
 var MAX_RESULTS = 10; // số dự án tối đa hiện trong danh sách gợi ý mỗi lần tìm
 
 var tg = window.Telegram ? window.Telegram.WebApp : null;
-var state = { daGop: [], thongBao: "", hoTen: "", available: 8, projects: [], byId: {}, days: [], di: 0, rows: [newRow()], otRows: [newRow()], editing: false, drafts: {}, lyDoBoSung: "", lyDoDc: "", lyDoDcKhac: "" };
+var state = { dat: null, daGop: [], thongBao: "", hoTen: "", available: 8, projects: [], byId: {}, days: [], di: 0, rows: [newRow()], otRows: [newRow()], editing: false, drafts: {}, lyDoBoSung: "", lyDoDc: "", lyDoDcKhac: "" };
 // Lý do điều chỉnh hồi tố (Q-61) - máy chủ gửi kèm danh sách trong từng ngày; đây là dự phòng
 var LY_DO_DC_MAC_DINH = ["Theo chấm công", "Đơn duyệt sau khi khoá", "Quên sửa", "Khác"];
 // Mở từ tin nhắc 1 ngày cụ thể (nút có ?ngay=yyyy-MM-dd, chốt 26/10/2026): chỉ hiện ngày đó, lưu xong báo các ngày còn cần điền.
@@ -98,7 +98,7 @@ function veDanhMuc() {
   var nhom = {};
   state.projects.forEach(function (p) {
     var khop = khopTen(p, tokens);
-    if (tokens.length && !khop.length) return;
+    if (tokens.length && !khop.length && !tokens.every(function (t) { return norm(p.ProjectID).indexOf(t) !== -1; })) return; // tìm được cả theo mã dự án
     var k = p.PhanLoai || "Khác";
     (nhom[k] = nhom[k] || []).push(p);
   });
@@ -108,8 +108,9 @@ function veDanhMuc() {
     html += '<h4 class="khoi">' + esc(k) + ' (' + nhom[k].length + ')</h4>';
     nhom[k].sort(function (a, b) { return String(a.TenDuAn).localeCompare(String(b.TenDuAn), "vi"); }).forEach(function (p) {
       html += '<div class="row"><div class="info"><div class="name">' + esc(p.TenDuAn) + '</div>' +
+        '<div class="desc">' + esc(p.ProjectID) + (p.PhuTrach ? ' · Phụ trách: ' + esc(p.PhuTrach) : '') + '</div>' +
         (p.TenCu && p.TenCu.length ? '<div class="desc">Đã gộp từ: ' + esc(p.TenCu.join(", ")) + '</div>' : '') +
-        (p.MoTa ? '<div class="desc">' + esc(p.MoTa) + '</div>' : '') + '</div></div>';
+        '<div class="desc">' + (p.MoTa ? esc(p.MoTa) : '(Chưa có mô tả)') + '</div></div></div>';
     });
   });
   var gop = state.daGop.filter(function (g) {
@@ -120,10 +121,254 @@ function veDanhMuc() {
     html += '<h4 class="khoi">🔀 Đã gộp (' + gop.length + ')</h4>';
     gop.forEach(function (g) {
       html += '<div class="row"><div class="info"><div class="name">' + esc(g.TenDuAn) + ' → ' + esc(g.VaoTen) + '</div>' +
+        '<div class="desc">' + esc(g.ProjectID) + ' → ' + esc(g.VaoID) + '</div>' +
         (g.NgayGop ? '<div class="desc">Từ ' + esc(ngayVN(g.NgayGop)) + '</div>' : '') + '</div></div>';
     });
   }
   $("dmList").innerHTML = html || '<p class="note">Không tìm thấy dự án phù hợp.</p>';
+}
+
+// ---- Dự án của tôi theo tháng (chốt 30/10/2026, Q-84) ----
+function dsThangCua(ngay) { return state.dat && state.dat.ds ? (state.dat.ds[String(ngay).substring(0, 7)] || null) : null; }
+function tenThangVN(thang) { var x = String(thang).split("-"); return "tháng " + Number(x[1]); }
+function veLaiSauChon() { if (state.days.length) { delete state.drafts[cur().ngay]; showDay(); } else showMessage(state.thongBao || "Hôm nay không có ngày cần điền timesheet."); }
+
+// Màn chọn danh sách dự án của tháng. suaLai = mở từ nút "⭐ Dự án của tôi" (có nút Huỷ thay cho Bỏ qua).
+function showChonDuAnThang(thang, ids, suaLai, sauKhi) {
+  var chon = ids.filter(function (id) { return state.byId[id]; });
+  function ve() {
+    var html = '<h3>⭐ Dự án của bạn ' + esc(tenThangVN(thang)) + '</h3>' +
+      '<p class="sub">Chọn các dự án bạn sẽ làm trong ' + esc(tenThangVN(thang)) + '. Hằng ngày form điền giờ sẽ hiện sẵn các dự án này; ngày nào không làm thì bấm × để bỏ.</p>';
+    if (!suaLai && chon.length) html += '<p class="note">Gợi ý từ danh sách tháng trước, bạn sửa lại nếu cần.</p>';
+    if (state.dat && state.dat.ghiChu && state.dat.ghiChu.length) html += '<p class="note warn">' + esc(state.dat.ghiChu.join("; ")) + '.</p>';
+    chon.forEach(function (id, i) {
+      var p = state.byId[id];
+      html += '<div class="row"><div class="info"><div class="name">' + esc(p.TenDuAn) + '</div>' + (p.MoTa ? '<div class="desc">' + esc(p.MoTa) + '</div>' : '') +
+        '</div><button class="x" data-bo="' + i + '" title="Bỏ khỏi danh sách">×</button></div>';
+    });
+    html += '<div class="pick"><div class="pickhead"><label>Thêm dự án</label></div>' +
+      '<input type="text" class="search" id="dtSearch" placeholder="Gõ để tìm dự án..." autocomplete="off"><div class="results" id="dtRes" style="display:none"></div></div>' +
+      '<p class="count">Đã chọn: ' + chon.length + ' dự án</p>' +
+      '<button id="dtLuu">Lưu danh sách</button><button id="dtBoQua" class="secondary">' + (suaLai ? 'Huỷ' : 'Bỏ qua') + '</button><p class="hint" id="dtLoi"></p>';
+    $("app").innerHTML = html;
+    Array.prototype.forEach.call($("app").querySelectorAll("[data-bo]"), function (b) {
+      b.addEventListener("click", function () { chon.splice(parseInt(b.getAttribute("data-bo"), 10), 1); ve(); });
+    });
+    $("dtSearch").addEventListener("input", function () {
+      var tokens = norm($("dtSearch").value).split(/\s+/).filter(Boolean);
+      if (!tokens.length) { $("dtRes").style.display = "none"; return; }
+      var ds = state.projects.filter(function (p) { return chon.indexOf(p.ProjectID) < 0 && khopTen(p, tokens).length; }).slice(0, MAX_RESULTS);
+      $("dtRes").innerHTML = ds.length ? ds.map(function (p) {
+        return '<div class="res-item" data-id="' + esc(p.ProjectID) + '"><div class="res-name">' + esc(p.TenDuAn) + '</div></div>';
+      }).join("") : '<div class="res-note">Không tìm thấy dự án phù hợp.</div>';
+      $("dtRes").style.display = "block";
+    });
+    $("dtRes").addEventListener("click", function (e) {
+      var it = e.target.closest(".res-item");
+      if (it) { chon.push(it.getAttribute("data-id")); ve(); }
+    });
+    $("dtLuu").addEventListener("click", function () { luuDuAnThang(thang, chon, sauKhi); });
+    $("dtBoQua").addEventListener("click", function () { if (suaLai) sauKhi(); else luuDuAnThang(thang, [], sauKhi); });
+  }
+  ve();
+}
+
+function luuDuAnThang(thang, ids, sauKhi) {
+  callApi("luuDuAnThang", { thang: thang, ids: ids }).then(function (res) {
+    if (!res.ok) { if ($("dtLoi")) $("dtLoi").textContent = res.error || "Không lưu được danh sách."; else sauKhi(); return; }
+    state.dat.ds[res.thang] = res.ids;
+    if (res.thang === state.dat.thang) { state.dat.daChon = true; state.dat.ghiChu = []; }
+    sauKhi();
+  }).catch(function (err) { if ($("dtLoi")) $("dtLoi").textContent = "Lỗi kết nối: " + err; else sauKhi(); });
+}
+
+// Lưu xong 1 ngày mà khác danh sách tháng: hỏi có thêm vào / bỏ khỏi danh sách không
+function showHoiCapNhatThang(thang, them, bo, tiepTuc) {
+  var html = '<h3>Cập nhật danh sách dự án ' + esc(tenThangVN(thang)) + '?</h3><p class="sub">Timesheet đã được lưu. Hôm nay khác danh sách dự án của tháng:</p>';
+  them.forEach(function (id, i) { html += '<label class="radio"><input type="checkbox" id="dtThem' + i + '" checked>Thêm vào danh sách: ' + esc((state.byId[id] || {}).TenDuAn || id) + '</label>'; });
+  bo.forEach(function (id, i) { html += '<label class="radio"><input type="checkbox" id="dtBo' + i + '">Bỏ khỏi danh sách: ' + esc((state.byId[id] || {}).TenDuAn || id) + '</label>'; });
+  html += '<button id="dtCapNhat">Cập nhật danh sách</button><button id="dtGiu" class="secondary">Giữ nguyên danh sách</button>';
+  $("app").innerHTML = html;
+  $("dtGiu").addEventListener("click", tiepTuc);
+  $("dtCapNhat").addEventListener("click", function () {
+    var ds = (dsThangCua(thang + "-01") || []).filter(function (id, i) { return !bo.some(function (b, j) { return b === id && $("dtBo" + j).checked; }); });
+    them.forEach(function (id, i) { if ($("dtThem" + i).checked && ds.indexOf(id) < 0) ds.push(id); });
+    luuDuAnThang(thang, ds, tiepTuc);
+  });
+}
+
+// ---- Leader yêu cầu sửa timesheet → GM duyệt (chốt 01/11/2026, Q-91) ----
+var SL_TT = { ChoDuyet: "⏳ Chờ GM duyệt", CanSuaLai: "↩️ GM yêu cầu sửa lại", DaDuyet: "✅ GM đã duyệt", TuChoi: "❌ GM từ chối",
+  DaHuy: "Đã huỷ", KhongApDung: "⚠️ Không áp dụng (giờ đã thay đổi)", HetHan: "⌛ Hết hạn" };
+var SL_LY_DO = ["Nhầm dự án", "Nhầm số giờ", "Khác"];
+var sl = { tong: null, ngay: null, lv: [], ot: [], lyDo: "", lyDoKhac: "", ma: "" };
+function slTen(pid) { return (sl.tong && sl.tong.tenDuAn && sl.tong.tenDuAn[pid]) || pid; }
+function slVeLai() { if (state.days.length) showDay(); else showMessage(state.thongBao || "Hôm nay không có ngày cần điền timesheet."); }
+function slDsTuMap(m) { return Object.keys(m || {}).filter(function (k) { return m[k] > 0; }).map(function (k) { return { pid: k, gio: m[k] }; }); }
+
+function showSuaLeader() {
+  showMessage("Đang tải...");
+  callApi("slTong").then(function (r) {
+    showVersion(r, false);
+    if (!r.ok) { showMessage(r.error, "error"); return; }
+    sl.tong = r; veSlDanhSach();
+  }).catch(function (err) { showMessage("Lỗi kết nối: " + err, "error"); });
+}
+
+function veSlDanhSach() {
+  var html = '<div class="daybar"><button id="slBack" class="nav" title="Quay lại">‹</button><h3>✏️ Yêu cầu sửa timesheet</h3><span style="width:40px"></span></div>' +
+    '<p class="sub">Sửa dự án / số giờ của nhân viên trong nhóm (từ ' + esc(ngayVN(sl.tong.tuNgay)) + ' đến hôm nay). Yêu cầu gửi GM duyệt.</p>' +
+    '<button id="slMoi">+ Tạo yêu cầu mới</button><h4 class="khoi">Yêu cầu của tôi</h4>';
+  if (!sl.tong.yeuCau.length) html += '<p class="note">Chưa có yêu cầu nào.</p>';
+  sl.tong.yeuCau.forEach(function (y, i) {
+    html += '<div class="row"><div class="info"><div class="name">#' + esc(y.ma) + ' · ' + esc(y.hoTen || y.nvId) + ' · ' + esc(ngayVN(y.ngay)) + '</div>' +
+      '<div class="desc">' + esc(SL_TT[y.trangThai] || y.trangThai) + (y.vong > 1 ? ' · lần ' + y.vong : '') + ' · Lý do: ' + esc(y.lyDo) + '</div>' +
+      (y.lyDoGM ? '<div class="desc">GM: ' + esc(y.lyDoGM) + '</div>' : '') +
+      (y.trangThai === "CanSuaLai" ? '<button class="secondary" data-sua="' + i + '">Sửa lại</button>' : '') +
+      (y.trangThai === "ChoDuyet" || y.trangThai === "CanSuaLai" ? '<button class="secondary" data-huy="' + i + '">Huỷ yêu cầu</button>' : '') +
+      '</div></div>';
+  });
+  $("app").innerHTML = html;
+  $("slBack").addEventListener("click", slVeLai);
+  $("slMoi").addEventListener("click", function () { veSlChon(null); });
+  Array.prototype.forEach.call($("app").querySelectorAll("[data-sua]"), function (b) {
+    b.addEventListener("click", function () { var y = sl.tong.yeuCau[+b.getAttribute("data-sua")]; slTaiNgay(y.nvId, y.ngay, y); });
+  });
+  Array.prototype.forEach.call($("app").querySelectorAll("[data-huy]"), function (b) {
+    b.addEventListener("click", function () {
+      var y = sl.tong.yeuCau[+b.getAttribute("data-huy")];
+      b.disabled = true;
+      callApi("slHuy", { ma: y.ma }).then(function (r) { if (!r.ok) { b.disabled = false; alert(r.error); return; } showSuaLeader(); });
+    });
+  });
+}
+
+function veSlChon(loi) {
+  var html = '<div class="daybar"><button id="slBack" class="nav" title="Quay lại">‹</button><h3>Yêu cầu mới</h3><span style="width:40px"></span></div>' +
+    '<h4 class="khoi">Nhân viên</h4><select id="slNv" class="search" style="width:100%;height:40px;font-size:16px">' +
+    sl.tong.nhom.map(function (n) { return '<option value="' + esc(n.id) + '">' + esc(n.hoTen) + ' (' + esc(n.id) + ')</option>'; }).join("") + '</select>' +
+    '<h4 class="khoi">Ngày</h4><input type="date" id="slNgay" class="search" style="width:100%;height:40px;font-size:16px" min="' + esc(sl.tong.tuNgay) + '" max="' + esc(sl.tong.denNgay) + '" value="' + esc(sl.tong.denNgay) + '">' +
+    '<p class="hint" id="slLoi">' + esc(loi || "") + '</p><button id="slXem">Xem giờ hiện tại</button>';
+  $("app").innerHTML = html;
+  $("slBack").addEventListener("click", veSlDanhSach);
+  $("slXem").addEventListener("click", function () { slTaiNgay($("slNv").value, $("slNgay").value, null); });
+}
+
+function slTaiNgay(nvId, ngay, y) {
+  showMessage("Đang tải...");
+  callApi("slNgay", { nhanVienId: nvId, ngay: ngay, ma: y ? y.ma : "" }).then(function (r) {
+    if (!r.ok) { if (y) { veSlDanhSach(); alert(r.error); } else veSlChon(r.error); return; }
+    sl.ngay = r; sl.ma = y ? y.ma : "";
+    sl.lv = slDsTuMap(y ? y.banMoi.lv : r.lv); sl.ot = slDsTuMap(y ? y.banMoi.ot : r.ot);
+    var ld = y ? String(y.lyDo) : "";
+    sl.lyDo = SL_LY_DO.indexOf(ld) >= 0 ? ld : (ld ? "Khác" : ""); sl.lyDoKhac = ld.indexOf("Khác: ") === 0 ? ld.substring(6) : "";
+    veSlForm();
+  }).catch(function (err) { showMessage("Lỗi kết nối: " + err, "error"); });
+}
+
+function slTong(ds) { return ds.reduce(function (a, e) { return a + (Number(e.gio) || 0); }, 0); }
+function slKhoiHtml(k, ds, can) {
+  var html = "";
+  ds.forEach(function (e, i) {
+    html += '<div class="row"><div class="info"><div class="name">' + esc(slTen(e.pid)) + '</div><div class="desc">' + esc(e.pid) + '</div></div>' +
+      '<input type="number" class="hours" data-slk="' + k + '" data-sli="' + i + '" min="0" step="0.5" inputmode="decimal" value="' + esc(e.gio) + '">' +
+      '<button class="x" data-slrm="' + k + '" data-sli="' + i + '">×</button></div>';
+  });
+  return html + '<div class="pick"><input type="text" class="search" id="slTim' + k + '" placeholder="Thêm dự án..." autocomplete="off"><div class="results" id="slRes' + k + '" style="display:none"></div></div>' +
+    '<div id="slTong' + k + '"></div>';
+}
+function slLyDoGui() { return sl.lyDo === "Khác" ? (sl.lyDoKhac.trim() ? "Khác: " + sl.lyDoKhac.trim() : "") : sl.lyDo; }
+
+function veSlForm() {
+  var r = sl.ngay, coOt = r.canOt > 0 || Object.keys(r.ot || {}).length > 0 || sl.ot.length > 0;
+  var html = '<div class="daybar"><button id="slBack" class="nav" title="Quay lại">‹</button><h3>' + esc(r.hoTen) + ' · ' + esc(ngayVN(r.ngay)) + '</h3><span style="width:40px"></span></div>' +
+    '<p class="sub">' + (r.khoa ? 'Ngày đã khoá — duyệt xong ghi điều chỉnh vào giờ chính thức.' : 'Ngày chưa khoá — duyệt xong thay bản nhân viên đang lưu.') +
+    (sl.ma ? '<br>Sửa lại yêu cầu #' + esc(sl.ma) : '') + '</p>' +
+    '<h4 class="khoi">Giờ hiện tại</h4><p class="note">' + (slDsTuMap(r.lv).map(function (e) { return esc(slTen(e.pid)) + ': ' + fmt(e.gio) + 'h'; }).join("<br>") || "(không có)") +
+    (Object.keys(r.ot || {}).length ? '<br>OT: ' + slDsTuMap(r.ot).map(function (e) { return esc(slTen(e.pid)) + ' ' + fmt(e.gio) + 'h'; }).join(", ") : '') + '</p>' +
+    '<h4 class="khoi">Giờ làm việc mới (cần ' + fmt(r.canLv) + 'h)</h4>' + slKhoiHtml("lv", sl.lv, r.canLv) +
+    (coOt ? '<h4 class="khoi">Giờ OT mới (cần ' + fmt(r.canOt) + 'h)</h4>' + slKhoiHtml("ot", sl.ot, r.canOt) : '') +
+    '<h4 class="khoi">Lý do</h4>' + SL_LY_DO.map(function (ld, i) {
+      return '<label class="radio"><input type="radio" name="slLyDo" value="' + esc(ld) + '"' + (sl.lyDo === ld ? ' checked' : '') + '>' + esc(ld) + '</label>';
+    }).join("") + '<textarea id="slLyDoKhac" maxlength="150" rows="2" placeholder="Ghi rõ lý do" style="display:' + (sl.lyDo === "Khác" ? 'block' : 'none') + '"></textarea>' +
+    '<p class="hint" id="slHint"></p><button id="slXemLai" disabled>Xem lại &amp; gửi GM</button>';
+  $("app").innerHTML = html;
+  $("slLyDoKhac").value = sl.lyDoKhac;
+  $("slBack").addEventListener("click", function () { if (sl.ma) veSlDanhSach(); else veSlChon(null); });
+  Array.prototype.forEach.call($("app").querySelectorAll("[data-slk]"), function (inp) {
+    inp.addEventListener("input", function () { var v = parseFloat(inp.value); sl[inp.getAttribute("data-slk")][+inp.getAttribute("data-sli")].gio = isNaN(v) ? "" : v; slKiem(); });
+  });
+  Array.prototype.forEach.call($("app").querySelectorAll("[data-slrm]"), function (b) {
+    b.addEventListener("click", function () { sl[b.getAttribute("data-slrm")].splice(+b.getAttribute("data-sli"), 1); veSlForm(); });
+  });
+  ["lv", "ot"].forEach(function (k) {
+    var tim = $("slTim" + k); if (!tim) return;
+    tim.addEventListener("input", function () {
+      var tokens = norm(tim.value).split(/\s+/).filter(Boolean), box = $("slRes" + k);
+      if (!tokens.length) { box.style.display = "none"; return; }
+      var co = sl[k].map(function (e) { return e.pid; });
+      var ds = (sl.tong.duAn || []).filter(function (p) {
+        return co.indexOf(p.ProjectID) < 0 && (khopTen(p, tokens).length || tokens.every(function (t) { return norm(p.ProjectID).indexOf(t) !== -1; }));
+      }).slice(0, MAX_RESULTS);
+      box.innerHTML = ds.length ? ds.map(function (p) { return '<div class="res-item" data-id="' + esc(p.ProjectID) + '"><div class="res-name">' + esc(p.TenDuAn) + '</div><div class="res-desc">' + esc(p.ProjectID) + '</div></div>'; }).join("")
+        : '<div class="res-note">Không tìm thấy dự án phù hợp.</div>';
+      box.style.display = "block";
+    });
+    $("slRes" + k).addEventListener("click", function (e) {
+      var it = e.target.closest(".res-item"); if (!it) return;
+      sl[k].push({ pid: it.getAttribute("data-id"), gio: "" }); veSlForm();
+    });
+  });
+  Array.prototype.forEach.call($("app").querySelectorAll('input[name="slLyDo"]'), function (rd) {
+    rd.addEventListener("change", function () { sl.lyDo = rd.value; $("slLyDoKhac").style.display = sl.lyDo === "Khác" ? "block" : "none"; slKiem(); });
+  });
+  $("slLyDoKhac").addEventListener("input", function (e) { sl.lyDoKhac = e.target.value; slKiem(); });
+  $("slXemLai").addEventListener("click", veSlXemLai);
+  slKiem();
+}
+
+function slKiem() {
+  var r = sl.ngay, loi = "";
+  [["lv", r.canLv, "Giờ làm việc"], ["ot", r.canOt, "Giờ OT"]].forEach(function (x) {
+    var ds = sl[x[0]], t = slTong(ds), el = $("slTong" + x[0]);
+    if (el) el.innerHTML = '<span>Tổng</span><span class="' + (Math.abs(t - x[1]) < 1e-9 ? "ok" : "error") + '">' + fmt(t) + 'h / ' + fmt(x[1]) + 'h</span>';
+    if (el) el.style.cssText = "display:flex;justify-content:space-between;padding:10px 0 4px;font-weight:600";
+    if (loi) return;
+    if (ds.some(function (e) { return !(e.gio > 0); })) loi = x[2] + ": có dự án chưa nhập giờ.";
+    else if (ds.some(function (e) { return !laBoiSo(e.gio); })) loi = x[2] + ": số giờ phải là bội số của 0,5.";
+    else if (Math.abs(t - x[1]) > 1e-9) loi = x[2] + ": tổng phải đúng " + fmt(x[1]) + "h.";
+  });
+  if (!loi && !slLyDoGui()) loi = sl.lyDo === "Khác" ? "Vui lòng ghi rõ lý do." : "Vui lòng chọn lý do.";
+  $("slHint").textContent = loi;
+  $("slXemLai").disabled = !!loi;
+}
+
+function slTruocSau(cu, moi) {
+  var ks = {}; Object.keys(cu || {}).forEach(function (k) { ks[k] = 1; }); moi.forEach(function (e) { ks[e.pid] = 1; });
+  var m = {}; moi.forEach(function (e) { m[e.pid] = e.gio; });
+  return Object.keys(ks).map(function (k) {
+    return '<div class="row"><div class="info"><div class="name">' + esc(slTen(k)) + '</div></div><div class="name">' + fmt(cu[k] || 0) + 'h → ' + fmt(m[k] || 0) + 'h</div></div>';
+  }).join("");
+}
+
+function veSlXemLai() {
+  var r = sl.ngay, coOt = sl.ot.length || Object.keys(r.ot || {}).length;
+  $("app").innerHTML = '<h3>Xem lại yêu cầu</h3><p class="sub">' + esc(r.hoTen) + ' · ' + esc(ngayVN(r.ngay)) + '</p>' +
+    '<h4 class="khoi">Giờ làm việc (hiện tại → mới)</h4>' + slTruocSau(r.lv, sl.lv) +
+    (coOt ? '<h4 class="khoi">Giờ OT (hiện tại → mới)</h4>' + slTruocSau(r.ot, sl.ot) : '') +
+    '<h4 class="khoi">Lý do</h4><p class="note">' + esc(slLyDoGui()) + '</p>' +
+    '<button id="slGui">✅ Gửi GM duyệt</button><button id="slSua" class="secondary">✏️ Sửa lại</button><p class="hint" id="slLoiGui"></p>';
+  $("slSua").addEventListener("click", veSlForm);
+  $("slGui").addEventListener("click", function () {
+    $("slGui").disabled = true;
+    var doi = function (ds) { return ds.map(function (e) { return { projectId: e.pid, soGio: e.gio }; }); };
+    callApi("slGui", { nhanVienId: r.nhanVienId, ngay: r.ngay, lv: doi(sl.lv), ot: doi(sl.ot), lyDo: slLyDoGui(), ma: sl.ma }).then(function (k) {
+      if (!k.ok) { $("slGui").disabled = false; $("slLoiGui").textContent = k.error || "Không gửi được."; return; }
+      $("app").innerHTML = '<p class="msg ok">' + (k.tuDuyet ? "Đã cập nhật timesheet (bạn là GM nên yêu cầu được duyệt ngay)." : "Đã gửi GM duyệt yêu cầu #" + esc(k.ma) + ".") + '</p>' +
+        (k.canhBao ? '<p class="note warn">' + esc(k.canhBao) + '</p>' : '') + '<button id="slVeDs" class="secondary">Về danh sách yêu cầu</button>';
+      $("slVeDs").addEventListener("click", showSuaLeader);
+    }).catch(function (err) { $("slGui").disabled = false; $("slLoiGui").textContent = "Lỗi kết nối: " + err; });
+  });
 }
 
 function ngayTuDuongDan() {
@@ -184,7 +429,18 @@ function init() {
     state.daGop = data.daGop || [];
     state.thongBao = data.thongBao || "";
     state.days = data.days || [];
+    state.dat = data.duAnThang || null; // danh sách dự án của tôi theo tháng (13_DuAnThang.gs)
+    state.laLeader = !!data.laLeader;
     if (state.projects.length) { $("dmWrap").style.display = "block"; $("dmBtn").onclick = showDanhMuc; }
+    if (state.dat && state.projects.length) {
+      $("dmThangBtn").style.display = "block";
+      $("dmThangBtn").onclick = function () { showChonDuAnThang(state.dat.thang, (state.dat.ds[state.dat.thang] || []).slice(), true, veLaiSauChon); };
+    }
+    if (data.laLeader) { // Leader: yêu cầu sửa timesheet của nhân viên trong nhóm (Q-91)
+      $("dmWrap").style.display = "block"; $("dmBtn").style.display = state.projects.length ? "" : "none";
+      $("slBtn").style.display = "block"; $("slBtn").onclick = showSuaLeader;
+      if (xemTuDuongDan() === "sualeader") { showSuaLeader(); return; }
+    }
     if (xemTuDuongDan() === "duan" && state.projects.length) { showDanhMuc(); return; } // mở từ lệnh /duan
     if (state.days.length === 0) {
       if (data.thongBao) { showMessage(data.thongBao); return; } // không phải lỗi: hôm nay không cần điền (cuối tuần, lễ, nghỉ cả ngày)
@@ -197,6 +453,8 @@ function init() {
     for (var i = 0; ngayMo && i < state.days.length; i++) {
       if (state.days[i].ngay === ngayMo) { state.di = i; state.focus = ngayMo; break; } // ngày không còn trong danh sách (đã khoá): mở như bình thường
     }
+    // Lần đầu mở trong tháng: chọn danh sách dự án của tháng (gợi ý sẵn danh sách tháng trước)
+    if (state.dat && !state.dat.daChon && state.projects.length) { showChonDuAnThang(state.dat.thang, (state.dat.goiY || []).slice(), false, showDay); return; }
     showDay();
   }).catch(function (err) { showVersion(null, true); showMessage("Lỗi kết nối: " + err, "error"); });
 }
@@ -545,17 +803,28 @@ function onConfirm() {
     state.lyDoBoSung = "";
     state.lyDoDc = ""; state.lyDoDcKhac = "";
     var ngayLabel = d.nhan.toLowerCase();
-    if (state.focus) { showConLai(res); return; } // mở từ tin nhắc 1 ngày: báo các ngày còn cần điền
-    if (res.status === "already_saved") {
-      showSaved("Timesheet " + ngayLabel + " đã được ghi nhận",
-        "Nội dung không thay đổi so với bản đã lưu nên không ghi thêm.", false);
-    } else if (res.status === "updated") {
-      showSaved("Đã cập nhật timesheet " + ngayLabel,
-        "Bản đã lưu" + (res.previousSavedAt ? " lúc " + res.previousSavedAt : "") +
-        " đã bị xoá và thay bằng bản mới này.", true);
-    } else {
-      showSuccess(res.savedAt);
+    var hienKetQua = function () {
+      if (state.focus) { showConLai(res); return; } // mở từ tin nhắc 1 ngày: báo các ngày còn cần điền
+      if (res.status === "already_saved") {
+        showSaved("Timesheet " + ngayLabel + " đã được ghi nhận",
+          "Nội dung không thay đổi so với bản đã lưu nên không ghi thêm.", false);
+      } else if (res.status === "updated") {
+        showSaved("Đã cập nhật timesheet " + ngayLabel,
+          "Bản đã lưu" + (res.previousSavedAt ? " lúc " + res.previousSavedAt : "") +
+          " đã bị xoá và thay bằng bản mới này.", true);
+      } else {
+        showSuccess(res.savedAt);
+      }
+    };
+    // Danh sách dự án của tháng: khác giờ làm việc vừa lưu thì hỏi có thêm vào / bỏ khỏi danh sách không (OT không tính)
+    var dsT = d.dieuChinh ? null : dsThangCua(d.ngay);
+    if (dsT && res.status !== "already_saved") {
+      var daLuuIds = duLieu.entries.map(function (e) { return e.projectId; });
+      var them = daLuuIds.filter(function (id) { return dsT.indexOf(id) < 0 && state.byId[id]; });
+      var bo = dsT.filter(function (id) { return daLuuIds.indexOf(id) < 0 && state.byId[id]; });
+      if (them.length || bo.length) { showHoiCapNhatThang(d.ngay.substring(0, 7), them, bo, hienKetQua); return; }
     }
+    hienKetQua();
   }).catch(function (err) { submitting = false; showErrorWithBack("Lỗi kết nối: " + err); });
 }
 
@@ -656,6 +925,11 @@ function showDay() {
   if (dr) { state.rows = dr.rows; state.otRows = dr.otRows || [newRow()]; state.editing = dr.editing; state.lyDoBoSung = dr.lyDoBoSung || ""; state.lyDoDc = dr.lyDoDc || ""; state.lyDoDcKhac = dr.lyDoDcKhac || ""; }
   else {
     state.rows = [newRow()]; state.otRows = [newRow()]; state.editing = false; state.lyDoBoSung = ""; state.lyDoDc = ""; state.lyDoDcKhac = "";
+    var dsT = dsThangCua(d.ngay); // hiện sẵn dự án của tháng ở khối giờ làm việc (giờ để trống)
+    if (dsT && !d.saved && !d.readonly && !d.dieuChinh && coLamViec(d)) {
+      var cacDong = dsT.filter(function (id) { return state.byId[id]; }).map(function (id) { return { projectId: id, gio: "" }; });
+      if (cacDong.length) state.rows = cacDong;
+    }
     if (d.dieuChinh && d.hienTai) { // ngày Điều chỉnh: điền sẵn giờ đã chốt hiện tại để nhân viên chỉ cần sửa
       state.rows = doiSangRows(d.hienTai.entries);
       state.otRows = doiSangRows(d.hienTai.otEntries);
