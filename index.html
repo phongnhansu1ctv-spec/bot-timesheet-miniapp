@@ -59,7 +59,7 @@ var API_URL = "https://script.google.com/macros/s/AKfycbzbUMVtBrj3qXS-R6kmHLNY0S
 
 // Phiên bản giao diện - đổi số này mỗi lần sửa file; khớp với PHIEN_BAN_MAY_CHU trong 07_MiniAppApi.gs.
 // Hiện ở chân trang để biết ngay trang đang mở có đúng bản mới nhất không (GitHub Pages / Telegram có cache).
-var CLIENT_VERSION = "2026-11-01.1";
+var CLIENT_VERSION = "2026-11-04.1";
 
 var BUOC_GIO = 0.5; // mỗi dự án chỉ nhập bội số của 0,5 giờ (đã chốt 2026-10-05); máy chủ cũng kiểm tra lại
 var MAX_RESULTS = 10; // số dự án tối đa hiện trong danh sách gợi ý mỗi lần tìm
@@ -157,9 +157,18 @@ function showChonDuAnThang(thang, ids, suaLai, sauKhi) {
     $("dtSearch").addEventListener("input", function () {
       var tokens = norm($("dtSearch").value).split(/\s+/).filter(Boolean);
       if (!tokens.length) { $("dtRes").style.display = "none"; return; }
-      var ds = state.projects.filter(function (p) { return chon.indexOf(p.ProjectID) < 0 && khopTen(p, tokens).length; }).slice(0, MAX_RESULTS);
+      var khopCu = {};
+      var ds = state.projects.filter(function (p) {
+        if (chon.indexOf(p.ProjectID) >= 0) return false;
+        var k = khopTen(p, tokens);
+        if (k.length && k.indexOf(p.TenDuAn) < 0) khopCu[p.ProjectID] = k;
+        return k.length > 0;
+      }).slice(0, MAX_RESULTS);
+      // giống ô chọn dự án khi điền giờ: tên + mô tả (dự án tìm ra theo tên cũ thì ghi "đã gộp từ")
       $("dtRes").innerHTML = ds.length ? ds.map(function (p) {
-        return '<div class="res-item" data-id="' + esc(p.ProjectID) + '"><div class="res-name">' + esc(p.TenDuAn) + '</div></div>';
+        return '<div class="res-item" data-id="' + esc(p.ProjectID) + '"><div class="res-name">' + esc(p.TenDuAn) +
+          (khopCu[p.ProjectID] ? ' (đã gộp từ ' + esc(khopCu[p.ProjectID].join(", ")) + ')' : '') + '</div>' +
+          (p.MoTa ? '<div class="res-desc">' + esc(p.MoTa) + '</div>' : '') + '</div>';
       }).join("") : '<div class="res-note">Không tìm thấy dự án phù hợp.</div>';
       $("dtRes").style.display = "block";
     });
@@ -310,7 +319,7 @@ function veSlForm() {
       var ds = (sl.tong.duAn || []).filter(function (p) {
         return co.indexOf(p.ProjectID) < 0 && (khopTen(p, tokens).length || tokens.every(function (t) { return norm(p.ProjectID).indexOf(t) !== -1; }));
       }).slice(0, MAX_RESULTS);
-      box.innerHTML = ds.length ? ds.map(function (p) { return '<div class="res-item" data-id="' + esc(p.ProjectID) + '"><div class="res-name">' + esc(p.TenDuAn) + '</div><div class="res-desc">' + esc(p.ProjectID) + '</div></div>'; }).join("")
+      box.innerHTML = ds.length ? ds.map(function (p) { return '<div class="res-item" data-id="' + esc(p.ProjectID) + '"><div class="res-name">' + esc(p.TenDuAn) + '</div><div class="res-desc">' + esc(p.ProjectID) + (p.MoTa ? ' · ' + esc(p.MoTa) : '') + '</div></div>'; }).join("")
         : '<div class="res-note">Không tìm thấy dự án phù hợp.</div>';
       box.style.display = "block";
     });
