@@ -59,7 +59,7 @@ var API_URL = "https://script.google.com/macros/s/AKfycbzbUMVtBrj3qXS-R6kmHLNY0S
 
 // Phiên bản giao diện - đổi số này mỗi lần sửa file; khớp với PHIEN_BAN_MAY_CHU trong 07_MiniAppApi.gs.
 // Hiện ở chân trang để biết ngay trang đang mở có đúng bản mới nhất không (GitHub Pages / Telegram có cache).
-var CLIENT_VERSION = "2026-11-04.1";
+var CLIENT_VERSION = "2026-11-06.1";
 
 var BUOC_GIO = 0.5; // mỗi dự án chỉ nhập bội số của 0,5 giờ (đã chốt 2026-10-05); máy chủ cũng kiểm tra lại
 var MAX_RESULTS = 10; // số dự án tối đa hiện trong danh sách gợi ý mỗi lần tìm
@@ -78,6 +78,35 @@ function tenTimKiem(p) { return [p.TenDuAn].concat(p.TenCu || []); }
 function khopTen(p, tokens) {
   return tenTimKiem(p).filter(function (t) { var n = norm(t); return tokens.every(function (k) { return n.indexOf(k) !== -1; }); });
 }
+// ---- Tìm dự án (chốt 06/11/2026): ưu tiên khớp TÊN (kể cả tên cũ đã gộp), rồi khớp MÔ TẢ, rồi khớp MÃ ----
+// Trả mức khớp: 0 = tên, 1 = mô tả, 2 = mã; -1 = không khớp. Không gõ gì: mọi dự án đều khớp ở mức 0.
+function mucKhopDuAn(p, tokens) {
+  if (!tokens.length || khopTen(p, tokens).length) return 0;
+  var mt = norm(p.MoTa || "");
+  if (mt && tokens.every(function (t) { return mt.indexOf(t) !== -1; })) return 1;
+  if (tokens.every(function (t) { return norm(p.ProjectID).indexOf(t) !== -1; })) return 2;
+  return -1;
+}
+// Lọc + sắp xếp danh sách dự án theo mức khớp (giữ thứ tự gốc trong cùng mức); boQua = mảng ProjectID đã chọn
+function timDuAn(list, tokens, boQua) {
+  return list.map(function (p, i) { return { p: p, m: (boQua || []).indexOf(p.ProjectID) >= 0 ? -1 : mucKhopDuAn(p, tokens), i: i }; })
+    .filter(function (x) { return x.m >= 0; })
+    .sort(function (a, b) { return a.m - b.m || a.i - b.i; })
+    .map(function (x) { return x.p; });
+}
+// 1 dòng gợi ý dự án, trình bày như màn Danh mục: tên (đã gộp từ…) / mã · phụ trách / mô tả
+function ketQuaDuAnHtml(p, tokens) {
+  var k = tokens.length ? khopTen(p, tokens) : [];
+  return '<div class="res-item" data-id="' + esc(p.ProjectID) + '"><div class="res-name">' + esc(p.TenDuAn) +
+    (k.length && k.indexOf(p.TenDuAn) < 0 ? ' (đã gộp từ ' + esc(k.join(", ")) + ')' : '') + '</div>' +
+    '<div class="res-desc">' + esc(p.ProjectID) + (p.PhuTrach ? ' · Phụ trách: ' + esc(p.PhuTrach) : '') + '</div>' +
+    '<div class="res-desc">' + (p.MoTa ? esc(p.MoTa) : '(Chưa có mô tả)') + '</div></div>';
+}
+function chiTietDuAnHtml(p) { // mã · phụ trách + mô tả cho dòng dự án đã chọn
+  return '<div class="desc">' + esc(p.ProjectID || '') + (p.PhuTrach ? ' · Phụ trách: ' + esc(p.PhuTrach) : '') + '</div>' +
+    '<div class="desc">' + esc(p.MoTa || "(Chưa có mô tả)") + '</div>';
+}
+
 function ngayVN(n) { var x = String(n || "").split("-"); return x.length === 3 ? x[2] + "/" + x[1] + "/" + x[0] : ""; }
 
 // Màn Danh mục dự án: nhóm theo Phân loại, có tìm kiếm, mục "Đã gộp"
@@ -97,8 +126,7 @@ function veDanhMuc() {
   var tokens = norm($("dmSearch").value).split(/\s+/).filter(Boolean);
   var nhom = {};
   state.projects.forEach(function (p) {
-    var khop = khopTen(p, tokens);
-    if (tokens.length && !khop.length && !tokens.every(function (t) { return norm(p.ProjectID).indexOf(t) !== -1; })) return; // tìm được cả theo mã dự án
+    if (mucKhopDuAn(p, tokens) < 0) return; // tìm theo tên, mô tả hoặc mã
     var k = p.PhanLoai || "Khác";
     (nhom[k] = nhom[k] || []).push(p);
   });
@@ -143,7 +171,7 @@ function showChonDuAnThang(thang, ids, suaLai, sauKhi) {
     if (state.dat && state.dat.ghiChu && state.dat.ghiChu.length) html += '<p class="note warn">' + esc(state.dat.ghiChu.join("; ")) + '.</p>';
     chon.forEach(function (id, i) {
       var p = state.byId[id];
-      html += '<div class="row"><div class="info"><div class="name">' + esc(p.TenDuAn) + '</div>' + (p.MoTa ? '<div class="desc">' + esc(p.MoTa) + '</div>' : '') +
+      html += '<div class="row"><div class="info"><div class="name">' + esc(p.TenDuAn) + '</div>' + chiTietDuAnHtml(p) +
         '</div><button class="x" data-bo="' + i + '" title="Bỏ khỏi danh sách">×</button></div>';
     });
     html += '<div class="pick"><div class="pickhead"><label>Thêm dự án</label></div>' +
@@ -157,18 +185,8 @@ function showChonDuAnThang(thang, ids, suaLai, sauKhi) {
     $("dtSearch").addEventListener("input", function () {
       var tokens = norm($("dtSearch").value).split(/\s+/).filter(Boolean);
       if (!tokens.length) { $("dtRes").style.display = "none"; return; }
-      var khopCu = {};
-      var ds = state.projects.filter(function (p) {
-        if (chon.indexOf(p.ProjectID) >= 0) return false;
-        var k = khopTen(p, tokens);
-        if (k.length && k.indexOf(p.TenDuAn) < 0) khopCu[p.ProjectID] = k;
-        return k.length > 0;
-      }).slice(0, MAX_RESULTS);
-      // giống ô chọn dự án khi điền giờ: tên + mô tả (dự án tìm ra theo tên cũ thì ghi "đã gộp từ")
-      $("dtRes").innerHTML = ds.length ? ds.map(function (p) {
-        return '<div class="res-item" data-id="' + esc(p.ProjectID) + '"><div class="res-name">' + esc(p.TenDuAn) +
-          (khopCu[p.ProjectID] ? ' (đã gộp từ ' + esc(khopCu[p.ProjectID].join(", ")) + ')' : '') + '</div>' +
-          (p.MoTa ? '<div class="res-desc">' + esc(p.MoTa) + '</div>' : '') + '</div>';
+      var ds = timDuAn(state.projects, tokens, chon).slice(0, MAX_RESULTS);
+      $("dtRes").innerHTML = ds.length ? ds.map(function (p) { return ketQuaDuAnHtml(p, tokens);
       }).join("") : '<div class="res-note">Không tìm thấy dự án phù hợp.</div>';
       $("dtRes").style.display = "block";
     });
@@ -316,10 +334,8 @@ function veSlForm() {
       var tokens = norm(tim.value).split(/\s+/).filter(Boolean), box = $("slRes" + k);
       if (!tokens.length) { box.style.display = "none"; return; }
       var co = sl[k].map(function (e) { return e.pid; });
-      var ds = (sl.tong.duAn || []).filter(function (p) {
-        return co.indexOf(p.ProjectID) < 0 && (khopTen(p, tokens).length || tokens.every(function (t) { return norm(p.ProjectID).indexOf(t) !== -1; }));
-      }).slice(0, MAX_RESULTS);
-      box.innerHTML = ds.length ? ds.map(function (p) { return '<div class="res-item" data-id="' + esc(p.ProjectID) + '"><div class="res-name">' + esc(p.TenDuAn) + '</div><div class="res-desc">' + esc(p.ProjectID) + (p.MoTa ? ' · ' + esc(p.MoTa) : '') + '</div></div>'; }).join("")
+      var ds = timDuAn(sl.tong.duAn || [], tokens, co).slice(0, MAX_RESULTS);
+      box.innerHTML = ds.length ? ds.map(function (p) { return ketQuaDuAnHtml(p, tokens); }).join("")
         : '<div class="res-note">Không tìm thấy dự án phù hợp.</div>';
       box.style.display = "block";
     });
@@ -495,8 +511,7 @@ function pickRowHtml(i, kh) {
 function chosenRowHtml(r, i, kh) {
   var p = state.byId[r.projectId];
   return '<div class="row">' +
-    '<div class="info"><div class="name">' + esc(p.TenDuAn) + '</div>' +
-    '<div class="desc">' + esc(p.MoTa || "(Chưa có mô tả)") + '</div></div>' +
+    '<div class="info"><div class="name">' + esc(p.TenDuAn) + '</div>' + chiTietDuAnHtml(p) + '</div>' +
     '<input type="number" class="hours" data-i="' + i + '" data-k="' + kh + '" min="0" step="0.5" inputmode="decimal" placeholder="0" value="' + esc(r.gio) + '">' +
     '<button class="x" data-rm="' + i + '" data-k="' + kh + '" title="Bỏ dự án này">×</button>' +
     '</div>';
@@ -615,20 +630,10 @@ function showResults(i, query, kh) {
   if (!box) return;
   var tokens = norm(query).split(/\s+/).filter(Boolean);
   var chosen = chosenIds(kh);
-  var khopCu = {};
-  var matches = state.projects.filter(function (p) {
-    if (chosen.indexOf(p.ProjectID) !== -1) return false; // đã chọn ở dòng khác của CÙNG khối thì không gợi ý lại
-    var k = khopTen(p, tokens); // khớp tên hiện tại hoặc tên dự án đã gộp vào
-    if (k.length && k.indexOf(p.TenDuAn) < 0) khopCu[p.ProjectID] = k;
-    return k.length > 0;
-  });
+  var matches = timDuAn(state.projects, tokens, chosen); // ưu tiên tên, rồi mô tả, rồi mã
 
   var html = "";
-  matches.slice(0, MAX_RESULTS).forEach(function (p) {
-    html += '<div class="res-item" data-id="' + esc(p.ProjectID) + '">' +
-      '<div class="res-name">' + esc(p.TenDuAn) + (khopCu[p.ProjectID] ? ' (đã gộp từ ' + esc(khopCu[p.ProjectID].join(", ")) + ')' : '') + '</div>' +
-      (p.MoTa ? '<div class="res-desc">' + esc(p.MoTa) + '</div>' : '') + '</div>';
-  });
+  matches.slice(0, MAX_RESULTS).forEach(function (p) { html += ketQuaDuAnHtml(p, tokens); });
   if (matches.length === 0) {
     html = '<div class="res-note">Không tìm thấy dự án phù hợp.</div>';
   } else if (matches.length > MAX_RESULTS) {
