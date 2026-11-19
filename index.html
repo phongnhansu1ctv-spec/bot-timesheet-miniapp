@@ -4,7 +4,10 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
 <title>Bot Timesheet</title>
-<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<!-- Telegram SDK: bản tự lưu cùng thư mục GitHub Pages (19/11/2026, INC-027: một số mạng chặn telegram.org nên Mini App báo "Không tải được Telegram SDK");
+     không có bản tự lưu thì mới tải từ telegram.org -->
+<script src="telegram-web-app.js?v=8.0.2"></script>
+<script>if (!window.Telegram) document.write('<script src="https://telegram.org/js/telegram-web-app.js"><\/script>');</script>
 <style>
 body{font-family:-apple-system,sans-serif;margin:0;padding:16px;background:var(--tg-theme-bg-color,#fff);color:var(--tg-theme-text-color,#000);}
 h3{margin:0 0 4px;}
@@ -59,7 +62,7 @@ var API_URL = "https://script.google.com/macros/s/AKfycbzbUMVtBrj3qXS-R6kmHLNY0S
 
 // Phiên bản giao diện - đổi số này mỗi lần sửa file; khớp với PHIEN_BAN_MAY_CHU trong 07_MiniAppApi.gs.
 // Hiện ở chân trang để biết ngay trang đang mở có đúng bản mới nhất không (GitHub Pages / Telegram có cache).
-var CLIENT_VERSION = "2026-11-06.1";
+var CLIENT_VERSION = "2026-11-19.1";
 
 var BUOC_GIO = 0.5; // mỗi dự án chỉ nhập bội số của 0,5 giờ (đã chốt 2026-10-05); máy chủ cũng kiểm tra lại
 var MAX_RESULTS = 10; // số dự án tối đa hiện trong danh sách gợi ý mỗi lần tìm
@@ -1064,7 +1067,7 @@ function showErrorWithBack(text) {
 
 if (!tg) {
   showVersion(null, false);
-  showMessage("Không tải được Telegram SDK - hãy mở Mini App từ trong Telegram.", "error");
+  showMessage("Không tải được Telegram SDK. Hãy mở Mini App từ trong Telegram (bấm nút trong tin nhắn của bot); nếu vẫn lỗi, cập nhật Telegram lên bản mới nhất rồi thử lại, hoặc báo C&B.", "error");
 } else {
   tg.ready();
   tg.expand();
