@@ -16,7 +16,9 @@ h3{margin:0 0 4px;}
 .info{flex:1;padding-right:8px;min-width:0;}
 .name{font-weight:600;font-size:15px;}
 .desc{color:var(--tg-theme-hint-color,#888);font-size:12px;margin-top:2px;}
-.row input.hours{width:64px;height:36px;text-align:right;font-size:16px;border:1px solid var(--tg-theme-hint-color,#ccc);border-radius:6px;background:var(--tg-theme-bg-color,#fff);color:var(--tg-theme-text-color,#000);}
+.step{display:flex;align-items:center;flex:none;}
+.step button.stp{width:36px;height:36px;margin:0;padding:0;font-size:20px;line-height:1;border-radius:6px;flex:none;}
+.row input.hours{width:56px;height:36px;margin:0 4px;text-align:center;font-size:16px;border:1px solid var(--tg-theme-hint-color,#ccc);border-radius:6px;background:var(--tg-theme-bg-color,#fff);color:var(--tg-theme-text-color,#000);}
 .pick{padding:12px 0;border-bottom:1px solid var(--tg-theme-hint-color,#eee);position:relative;}
 .pickhead{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;}
 .pickhead label{font-size:13px;color:var(--tg-theme-hint-color,#888);}
@@ -62,7 +64,7 @@ var API_URL = "https://script.google.com/macros/s/AKfycbzbUMVtBrj3qXS-R6kmHLNY0S
 
 // Phiên bản giao diện - đổi số này mỗi lần sửa file; khớp với PHIEN_BAN_MAY_CHU trong 07_MiniAppApi.gs.
 // Hiện ở chân trang để biết ngay trang đang mở có đúng bản mới nhất không (GitHub Pages / Telegram có cache).
-var CLIENT_VERSION = "2026-11-19.1";
+var CLIENT_VERSION = "2026-11-19.2";
 
 var BUOC_GIO = 0.5; // mỗi dự án chỉ nhập bội số của 0,5 giờ (đã chốt 2026-10-05); máy chủ cũng kiểm tra lại
 var MAX_RESULTS = 10; // số dự án tối đa hiện trong danh sách gợi ý mỗi lần tìm
@@ -296,12 +298,12 @@ function slTaiNgay(nvId, ngay, y) {
   }).catch(function (err) { showMessage("Lỗi kết nối: " + err, "error"); });
 }
 
-function slTong(ds) { return ds.reduce(function (a, e) { return a + (Number(e.gio) || 0); }, 0); }
+function slTong(ds) { return ds.reduce(function (a, e) { return a + (e.gio > 0 ? Number(e.gio) : 0); }, 0); }
 function slKhoiHtml(k, ds, can) {
   var html = "";
   ds.forEach(function (e, i) {
     html += '<div class="row"><div class="info"><div class="name">' + esc(slTen(e.pid)) + '</div><div class="desc">' + esc(e.pid) + '</div></div>' +
-      '<input type="number" class="hours" data-slk="' + k + '" data-sli="' + i + '" min="0" step="0.5" inputmode="decimal" value="' + esc(e.gio) + '">' +
+      oGioHtml('data-slk="' + k + '" data-sli="' + i + '"', e.gio) +
       '<button class="x" data-slrm="' + k + '" data-sli="' + i + '">×</button></div>';
   });
   return html + '<div class="pick"><input type="text" class="search" id="slTim' + k + '" placeholder="Thêm dự án..." autocomplete="off"><div class="results" id="slRes' + k + '" style="display:none"></div></div>' +
@@ -325,8 +327,17 @@ function veSlForm() {
   $("app").innerHTML = html;
   $("slLyDoKhac").value = sl.lyDoKhac;
   $("slBack").addEventListener("click", function () { if (sl.ma) veSlDanhSach(); else veSlChon(null); });
-  Array.prototype.forEach.call($("app").querySelectorAll("[data-slk]"), function (inp) {
-    inp.addEventListener("input", function () { var v = parseFloat(inp.value); sl[inp.getAttribute("data-slk")][+inp.getAttribute("data-sli")].gio = isNaN(v) ? "" : v; slKiem(); });
+  Array.prototype.forEach.call($("app").querySelectorAll("input[data-slk]"), function (inp) {
+    inp.addEventListener("input", function () { sl[inp.getAttribute("data-slk")][+inp.getAttribute("data-sli")].gio = docGio(inp.value); slKiem(); });
+  });
+  Array.prototype.forEach.call($("app").querySelectorAll("button.stp[data-slk]"), function (b) {
+    b.addEventListener("click", function () {
+      var k = b.getAttribute("data-slk"), i = +b.getAttribute("data-sli"), ds = sl[k], can = k === "ot" ? sl.ngay.canOt : sl.ngay.canLv;
+      var tongKhac = ds.reduce(function (a, e, j) { return a + (j !== i && e.gio > 0 ? e.gio : 0); }, 0);
+      ds[i].gio = gioBuoc(ds[i].gio, +b.getAttribute("data-d"), tongKhac, can);
+      var inp = $("app").querySelector('input[data-slk="' + k + '"][data-sli="' + i + '"]'); if (inp) inp.value = gioHienThi(ds[i].gio);
+      slKiem();
+    });
   });
   Array.prototype.forEach.call($("app").querySelectorAll("[data-slrm]"), function (b) {
     b.addEventListener("click", function () { sl[b.getAttribute("data-slrm")].splice(+b.getAttribute("data-sli"), 1); veSlForm(); });
@@ -362,8 +373,9 @@ function slKiem() {
     if (el) el.innerHTML = '<span>Tổng</span><span class="' + (Math.abs(t - x[1]) < 1e-9 ? "ok" : "error") + '">' + fmt(t) + 'h / ' + fmt(x[1]) + 'h</span>';
     if (el) el.style.cssText = "display:flex;justify-content:space-between;padding:10px 0 4px;font-weight:600";
     if (loi) return;
-    if (ds.some(function (e) { return !(e.gio > 0); })) loi = x[2] + ": có dự án chưa nhập giờ.";
-    else if (ds.some(function (e) { return !laBoiSo(e.gio); })) loi = x[2] + ": số giờ phải là bội số của 0,5.";
+    // dòng để 0 / trống: bỏ qua khi gửi (Q-106); chỉ báo khi chưa dòng nào có giờ
+    if (ds.length && !ds.some(function (e) { return e.gio > 0; })) loi = x[2] + ": có dự án chưa nhập giờ.";
+    else if (ds.some(function (e) { return e.gio > 0 && !laBoiSo(e.gio); })) loi = x[2] + ": số giờ phải là bội số của 0,5.";
     else if (Math.abs(t - x[1]) > 1e-9) loi = x[2] + ": tổng phải đúng " + fmt(x[1]) + "h.";
   });
   if (!loi && !slLyDoGui()) loi = sl.lyDo === "Khác" ? "Vui lòng ghi rõ lý do." : "Vui lòng chọn lý do.";
@@ -389,7 +401,7 @@ function veSlXemLai() {
   $("slSua").addEventListener("click", veSlForm);
   $("slGui").addEventListener("click", function () {
     $("slGui").disabled = true;
-    var doi = function (ds) { return ds.map(function (e) { return { projectId: e.pid, soGio: e.gio }; }); };
+    var doi = function (ds) { return ds.filter(function (e) { return e.gio > 0; }).map(function (e) { return { projectId: e.pid, soGio: e.gio }; }); };
     callApi("slGui", { nhanVienId: r.nhanVienId, ngay: r.ngay, lv: doi(sl.lv), ot: doi(sl.ot), lyDo: slLyDoGui(), ma: sl.ma }).then(function (k) {
       if (!k.ok) { $("slGui").disabled = false; $("slLoiGui").textContent = k.error || "Không gửi được."; return; }
       $("app").innerHTML = '<p class="msg ok">' + (k.tuDuyet ? "Đã cập nhật timesheet (bạn là GM nên yêu cầu được duyệt ngay)." : "Đã gửi GM duyệt yêu cầu #" + esc(k.ma) + ".") + '</p>' +
@@ -428,6 +440,24 @@ function norm(s) {
 
 function fmt(n) { return String(Math.round(n * 100) / 100); }
 function laBoiSo(v) { var k = v / BUOC_GIO; return Math.abs(k - Math.round(k)) < 1e-9; }
+// Ô giờ dạng chữ (19/11/2026, Q-106): ô "number" trên iPhone dùng dấu phẩy coi "1,5" là ô trống -> nhận cả 1,5 và 1.5
+function docGio(s) { var t = String(s == null ? "" : s).trim().replace(",", "."); if (t === "") return ""; var v = Number(t); return isNaN(v) ? "" : v; }
+function gioHienThi(v) { return v === "" || v == null ? "" : fmt(v).replace(".", ","); }
+// Ô giờ có nút − / + (mỗi lần 0,5h). attrs: thuộc tính data-* để biết dòng nào
+function oGioHtml(attrs, v) {
+  return '<div class="step"><button type="button" class="stp secondary" data-d="-1" ' + attrs + ' title="Bớt 0,5h">−</button>' +
+    '<input type="text" class="hours" ' + attrs + ' inputmode="decimal" autocomplete="off" placeholder="0" value="' + esc(gioHienThi(v)) + '">' +
+    '<button type="button" class="stp secondary" data-d="1" ' + attrs + ' title="Thêm 0,5h">+</button></div>';
+}
+// Giá trị mới khi bấm −/+: làm tròn về bội số 0,5 rồi ±0,5; không âm; nút + không làm tổng vượt `toiDa` (tongKhac = tổng các dòng khác)
+function gioBuoc(cu, d, tongKhac, toiDa) {
+  var c = cu > 0 ? cu : 0, k = c / BUOC_GIO, n;
+  if (d < 0) n = Math.abs(k - Math.round(k)) < 1e-9 ? c - BUOC_GIO : Math.floor(k) * BUOC_GIO;
+  else n = Math.abs(k - Math.round(k)) < 1e-9 ? c + BUOC_GIO : Math.ceil(k) * BUOC_GIO;
+  if (n < 0) n = 0;
+  if (d > 0 && n + tongKhac > toiDa + 1e-9) return c; // đã đủ giờ: không tăng nữa
+  return Math.round(n * 100) / 100;
+}
 
 function callApi(action, extra) {
   var payload = Object.assign({ action: action, initData: tg ? tg.initData : "" }, extra || {});
@@ -515,7 +545,7 @@ function chosenRowHtml(r, i, kh) {
   var p = state.byId[r.projectId];
   return '<div class="row">' +
     '<div class="info"><div class="name">' + esc(p.TenDuAn) + '</div>' + chiTietDuAnHtml(p) + '</div>' +
-    '<input type="number" class="hours" data-i="' + i + '" data-k="' + kh + '" min="0" step="0.5" inputmode="decimal" placeholder="0" value="' + esc(r.gio) + '">' +
+    oGioHtml('data-i="' + i + '" data-k="' + kh + '"', r.gio) +
     '<button class="x" data-rm="' + i + '" data-k="' + kh + '" title="Bỏ dự án này">×</button>' +
     '</div>';
 }
@@ -579,9 +609,10 @@ function render() {
   bindDayBar();
 
   Array.prototype.forEach.call(root.querySelectorAll(".search"), bindSearch);
-  Array.prototype.forEach.call(root.querySelectorAll(".hours"), function (inp) {
+  Array.prototype.forEach.call(root.querySelectorAll("input.hours"), function (inp) {
     inp.addEventListener("input", onHoursInput);
   });
+  Array.prototype.forEach.call(root.querySelectorAll("button.stp[data-i]"), function (b) { b.addEventListener("click", onHoursStep); });
   Array.prototype.forEach.call(root.querySelectorAll("[data-rm]"), function (btn) {
     btn.addEventListener("click", function () { onRemoveRow(parseInt(btn.getAttribute("data-rm"), 10), btn.getAttribute("data-k") || ""); });
   });
@@ -676,8 +707,18 @@ function onRemoveRow(i, kh) {
 function onHoursInput(e) {
   var i = parseInt(e.target.getAttribute("data-i"), 10);
   var kh = e.target.getAttribute("data-k") || "";
-  var v = parseFloat(e.target.value);
-  rowsOf(kh)[i].gio = isNaN(v) ? "" : v;
+  rowsOf(kh)[i].gio = docGio(e.target.value);
+  updateTotal();
+}
+
+// Nút − / +: ±0,5h; nút + dừng khi tổng của khối đã đủ giờ khả dụng (giờ OT với khối OT)
+function onHoursStep(e) {
+  var b = e.currentTarget, i = parseInt(b.getAttribute("data-i"), 10), kh = b.getAttribute("data-k") || "";
+  var ds = rowsOf(kh), toiDa = kh === "o" ? cur().otGio : gioKhaDung();
+  var tongKhac = ds.reduce(function (a, r, j) { return a + (j !== i && r.projectId && r.gio > 0 ? r.gio : 0); }, 0);
+  ds[i].gio = gioBuoc(ds[i].gio, +b.getAttribute("data-d"), tongKhac, toiDa);
+  var inp = document.querySelector('input.hours[data-i="' + i + '"][data-k="' + kh + '"]');
+  if (inp) inp.value = gioHienThi(ds[i].gio);
   updateTotal();
 }
 
@@ -688,8 +729,9 @@ function capNhatKhoi(kh, kd) {
   rowsOf(kh).forEach(function (r) {
     if (!r.projectId) return;
     count++;
-    if (r.gio > 0) { total += r.gio; if (!laBoiSo(r.gio)) saiBuoc = true; } else { incomplete = true; }
+    if (r.gio > 0) { total += r.gio; if (!laBoiSo(r.gio)) saiBuoc = true; } // dòng để 0 / trống: bỏ qua khi lưu (Q-106)
   });
+  incomplete = count > 0 && total === 0;
   var ok = count > 0 && !incomplete && !saiBuoc && Math.abs(total - kd) < 1e-9;
 
   $("count" + s).textContent = "Đã chọn: " + count + " dự án";
